@@ -60,8 +60,9 @@ const allowedOrigins = [
     'http://127.0.0.1:5173', 
     'http://localhost:3000',
     'http://localhost:5174',
-    'https://addisfrontend.vercel.app',  // ADD THIS
-    'https://addis-frontend.vercel.app'   // Also add without the 'f' in case
+    'https://addisfrontend.vercel.app',
+    'https://addis-frontend.vercel.app',
+    'https://your-frontend-domain.vercel.app'  // Add your actual Vercel URL
 ];
 
 app.use(cors({
@@ -71,7 +72,7 @@ app.use(cors({
         
         if (allowedOrigins.indexOf(origin) === -1) {
             const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
-            debug.warn('CORS blocked origin:', origin);
+            console.warn('CORS blocked origin:', origin);
             return callback(new Error(msg), false);
         }
         return callback(null, true);
