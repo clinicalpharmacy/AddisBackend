@@ -59,7 +59,9 @@ const allowedOrigins = [
     'http://localhost:5173', 
     'http://127.0.0.1:5173', 
     'http://localhost:3000',
-    'http://localhost:5174'  // Add this
+    'http://localhost:5174',
+    'https://addisfrontend.vercel.app',  // ADD THIS
+    'https://addis-frontend.vercel.app'   // Also add without the 'f' in case
 ];
 
 app.use(cors({
