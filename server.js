@@ -56,21 +56,26 @@ console.log(`🔧 Debug Mode: ${DEBUG ? 'ENABLED' : 'DISABLED'}`);
 
 // SIMPLIFIED CORS configuration - FIXED
 const allowedOrigins = [
-    'http://localhost:5173', 
-    'http://127.0.0.1:5173', 
-    'http://localhost:3000',
-    'http://localhost:5174',
-    'https://addisfrontend.vercel.app',
-    'https://addis-frontend.vercel.app',
-    'https://addisfrontend.vercel.app',  // Make sure this is exactly your Vercel URL
-    'https://*.vercel.app'  // Allow all Vercel subdomains
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'https://your-frontend.vercel.app'
 ];
 
 app.use(cors({
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 
 // Add this before all routes
@@ -8961,75 +8966,3 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 
-app.listen(PORT, () => {
-  console.log(`
-  🚀 PharmaCare Backend Server
-  =================================
-  ✅ Port: ${PORT}
-  ✅ Frontend: ${process.env.FRONTEND_URL || 'http://localhost:5173'}
-  ✅ Debug Mode: ${DEBUG ? 'ENABLED' : 'DISABLED'}
-  ✅ Supabase: ${supabase ? 'Connected ✅' : 'NOT CONFIGURED ❌'}
-  ✅ Service Role: ${supabaseAdmin ? 'AVAILABLE ✅' : 'MISSING ⚠️'}
-  ✅ Chapa Payment: ${CHAPA_SECRET_KEY ? 'CONFIGURED ✅' : 'MISSING ⚠️'}
-  =================================
-  
-  🔧 CRITICAL FIXES APPLIED:
-  
-  1. ✅ Enhanced CORS configuration
-  2. ✅ Auto-creates admin on server start
-  3. ✅ Uses .maybeSingle() to avoid query errors
-  4. ✅ Emergency admin fix endpoint
-  5. ✅ Force create admin endpoint
-  6. ✅ Complete error handling
-  7. ✅ Debug endpoints for troubleshooting
-  
-  =================================
-  
-  🛠️ QUICK START COMMANDS:
-  
-  1. Check admin status:
-     curl http://localhost:${PORT}/api/debug/admin-status
-  
-  2. Fix admin if missing:
-     curl -X POST http://localhost:${PORT}/api/debug/fix-admin
-  
-  3. Force create admin:
-     curl -X POST http://localhost:${PORT}/api/debug/force-create-admin
-  
-  4. Test login with admin:
-     curl -X POST http://localhost:${PORT}/api/auth/login \\
-       -H "Content-Type: application/json" \\
-       -d '{"email":"admin@pharmacare.com","password":"Admin@123"}'
-  
-  5. Check server health:
-     curl http://localhost:${PORT}/api/health
-  
-  6. Get server info:
-     curl http://localhost:${PORT}/api/server-info
-  
-  =================================
-  
-  📍 IMPORTANT ENDPOINTS:
-  
-  Health Check:       GET    http://localhost:${PORT}/api/health
-  Database Test:      GET    http://localhost:${PORT}/api/debug/db-test
-  Admin Status:       GET    http://localhost:${PORT}/api/debug/admin-status
-  Fix Admin:          POST   http://localhost:${PORT}/api/debug/fix-admin
-  Force Create Admin: POST   http://localhost:${PORT}/api/debug/force-create-admin
-  Login:              POST   http://localhost:${PORT}/api/auth/login
-  Register:           POST   http://localhost:${PORT}/api/auth/register
-  Server Info:        GET    http://localhost:${PORT}/api/server-info
-  
-  =================================
-  
-  🎉 SERVER IS RUNNING AND READY!
-  =================================
-  
-  Admin credentials:
-  📧 Email: admin@pharmacare.com
-  🔑 Password: Admin@123
-  👤 Role: System Administrator
-  
-  =================================
-  `);
-});
