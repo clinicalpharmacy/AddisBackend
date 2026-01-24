@@ -59,7 +59,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'http://127.0.0.1:5173',
-  'https://your-frontend.vercel.app'
+  'https://addisfrontend.vercel.app/'
 ];
 
 app.use(cors({
@@ -8965,4 +8965,4 @@ app.use((err, req, res, next) => {
 });
 
 // ==================== START SERVER ====================
-
+export default app;
