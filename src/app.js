@@ -32,6 +32,29 @@ app.use(cors({
 app.use(express.json());
 app.use(requestLogger);
 
+// Basic Routes
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        message: 'Welcome to Addis Clinical API',
+        version: '1.0.0',
+        status: 'operational'
+    });
+});
+
+app.get('/api', (req, res) => {
+    res.json({
+        success: true,
+        message: 'Addis Clinical API Base Endpoint',
+        endpoints: [
+            '/api/auth',
+            '/api/patients',
+            '/api/clinical',
+            '/api/medications'
+        ]
+    });
+});
+
 // Routes
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
