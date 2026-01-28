@@ -32,6 +32,15 @@ app.use(cors({
 app.use(express.json());
 app.use(requestLogger);
 
+// Basic Routes
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        message: 'Addis Clinical API is running',
+        version: '1.0.0'
+    });
+});
+
 // Routes
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
