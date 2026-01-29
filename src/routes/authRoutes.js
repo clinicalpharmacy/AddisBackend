@@ -1,9 +1,8 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
-import { debug } from '../utils/logger.js';
 import { isValidEmail } from '../utils/helpers.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
@@ -14,12 +13,13 @@ const JWT_SECRET = config.jwtSecret;
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        console.log('🔐 LOGIN ATTEMPT:', { email, passwordLength: password?.length });
+
+        const db = supabaseAdmin || supabase;
 
         if (!email || !password) {
             return res.status(400).json({ success: false, error: 'Email and password are required' });
         }
-        if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
+        if (!db) return res.status(503).json({ success: false, error: 'Database not configured' });
 
         const cleanEmail = email.trim().toLowerCase();
         const cleanPassword = password.trim();
@@ -27,13 +27,16 @@ router.post('/login', async (req, res) => {
         let userType = null;
         let fetchError = null;
 
-        const { data: regularUser, error: regularError } = await supabase.from('users').select('*').eq('email', cleanEmail).maybeSingle();
+        const { data: regularUser, error: regularError } = await db.from('users').select('*').eq('email', cleanEmail).maybeSingle();
+
 
         if (regularUser) {
             user = regularUser;
             userType = 'regular_user';
         } else {
-            const { data: companyUser, error: companyError } = await supabase.from('company_users').select('*').eq('email', cleanEmail).maybeSingle();
+            const { data: companyUser, error: companyError } = await db.from('company_users').select('*').eq('email', cleanEmail).maybeSingle();
+
+            if (companyError) console.error('❌ AUTH DEBUG DB Error:', companyError);
             if (companyUser) {
                 user = companyUser;
                 userType = 'company_user';
@@ -43,13 +46,24 @@ router.post('/login', async (req, res) => {
         }
 
         if (fetchError) return res.status(500).json({ success: false, error: 'Database error' });
-        if (!user) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+
+        if (!user) {
+            const errorMsg = process.env.NODE_ENV === 'development'
+                ? `Debug: User ${cleanEmail} not found. AdminClient: ${!!supabaseAdmin}`
+                : 'Invalid email or password';
+            return res.status(401).json({ success: false, error: errorMsg });
+        }
 
         let validPassword = false;
         if (user.password_hash) {
             validPassword = await bcrypt.compare(cleanPassword, user.password_hash);
         }
-        if (!validPassword) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+
+
+        if (!validPassword) {
+            const errorMsg = process.env.NODE_ENV === 'development' ? 'Debug: Password mismatch' : 'Invalid email or password';
+            return res.status(401).json({ success: false, error: errorMsg });
+        }
 
         if (user.role !== 'admin' && !user.approved) {
             return res.status(401).json({
@@ -59,24 +73,11 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        const tokenPayload = {
-            userId: user.id,
-            email: user.email,
-            name: user.full_name,
-            role: user.role,
-            approved: user.approved,
-            account_type: userType === 'company_user' ? 'company_user' : (user.account_type || 'individual'),
-            user_type: userType
-        };
-        if (user.company_id) tokenPayload.company_id = user.company_id;
-
-        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
-
-        let companyData = null;
         let companyId = user.company_id;
+        const db_search = db;
 
         if (!companyId) {
-            const { data: employeeRecord } = await supabase
+            const { data: employeeRecord } = await db_search
                 .from('company_users')
                 .select('company_id')
                 .ilike('email', cleanEmail)
@@ -87,16 +88,54 @@ router.post('/login', async (req, res) => {
             }
         }
 
+        const isEffectivelyCompanyUser = userType === 'company_user' || !!companyId;
+        const account_type_to_use = isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual');
+
+        const tokenPayload = {
+            userId: user.id,
+            email: user.email,
+            name: user.full_name,
+            role: user.role,
+            approved: user.approved,
+            account_type: account_type_to_use,
+            user_type: userType,
+            company_id: companyId
+        };
+
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
+
+        let companyData = null;
         if (companyId) {
-            const { data } = await supabase.from('companies').select('*').eq('id', companyId).maybeSingle();
+            const { data } = await db.from('companies').select('*').eq('id', companyId).maybeSingle();
             companyData = data;
+        }
+
+        // --- CONSTRAINT FIX: Sync company user to regular 'users' table if missing ---
+        if (userType === 'company_user' && user.id) {
+            try {
+                const { data: exists } = await db.from('users').select('id').eq('id', user.id).maybeSingle();
+                if (!exists) {
+
+                    await db.from('users').insert([{
+                        id: user.id,
+                        email: user.email,
+                        full_name: user.full_name,
+                        role: user.role,
+                        company_id: companyId,
+                        approved: true,
+                        password_hash: user.password_hash // Store hash for potential login fallback
+                    }]);
+                }
+            } catch (syncError) {
+                console.warn('⚠️ [FIX] User sync warning:', syncError.message);
+            }
         }
 
         let hasCompanySubscription = companyData && companyData.subscription_status === 'active';
 
         // NEW: Backup check in subscriptions history if company record is out of sync
         if (companyId && !hasCompanySubscription) {
-            const { data: activeSub } = await supabase
+            const { data: activeSub } = await db
                 .from('subscriptions')
                 .select('*')
                 .eq('company_id', companyId)
@@ -107,7 +146,7 @@ router.post('/login', async (req, res) => {
                 .maybeSingle();
 
             if (activeSub) {
-                console.log(`[Auth] Login recovery: Active subscription found for company ${companyId}`);
+
                 hasCompanySubscription = true;
                 companyData = companyData || { id: companyId };
                 companyData.subscription_status = 'active';
@@ -115,17 +154,6 @@ router.post('/login', async (req, res) => {
                 companyData.subscription_end_date = activeSub.end_date;
             }
         }
-
-        const isEffectivelyCompanyUser = userType === 'company_user' || !!companyId;
-
-        console.log(`[Auth] Login for ${user.email}:`, {
-            userType,
-            companyId,
-            hasCompanySubscription,
-            companyStatus: companyData?.subscription_status,
-            userSubscriptionStatus: user.subscription_status,
-            isEffectivelyCompanyUser
-        });
 
         const userResponse = {
             id: user.id,
@@ -148,8 +176,6 @@ router.post('/login', async (req, res) => {
             license_number: user.license_number || ''
         };
 
-        console.log(`[Auth] Login successful for ${user.email}. CompanyId: ${companyId}, Sub: ${userResponse.subscription_status}, Plan: ${userResponse.subscription_plan}`);
-
         res.json({
             success: true,
             message: 'Login successful',
@@ -160,7 +186,6 @@ router.post('/login', async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Login error:', error);
         res.status(500).json({ success: false, error: 'Login failed', details: error.message });
     }
 });
@@ -226,7 +251,6 @@ router.post('/register', async (req, res) => {
             userId: user.id
         });
     } catch (error) {
-        debug.error('Registration error:', error);
         res.status(500).json({ success: false, error: 'Registration failed', details: error.message });
     }
 });
@@ -254,7 +278,6 @@ router.post('/register-company', async (req, res) => {
             .limit(1);
 
         if (searchError) {
-            debug.error('Company search error:', searchError);
             return res.status(500).json({ success: false, error: 'Error checking existing companies: ' + searchError.message });
         }
         if (existingCompanies && existingCompanies.length > 0) {
@@ -268,7 +291,6 @@ router.post('/register-company', async (req, res) => {
             .limit(1);
 
         if (adminSearchError) {
-            debug.error('Admin search error:', adminSearchError);
             return res.status(500).json({ success: false, error: 'Error checking existing users' });
         }
         if (existingAdmins && existingAdmins.length > 0) {
@@ -295,7 +317,6 @@ router.post('/register-company', async (req, res) => {
         const company = companies?.[0];
 
         if (companyError || !company) {
-            debug.error('Company insert error:', companyError);
             // Check for duplicate errors
             if (companyError.message?.includes('company_name')) {
                 return res.status(400).json({
@@ -323,21 +344,17 @@ router.post('/register-company', async (req, res) => {
         const adminUser = adminUsers?.[0];
 
         if (adminError || !adminUser) {
-            debug.error('Compancy admin insert error:', adminError);
             await supabase.from('companies').delete().eq('id', company.id);
             throw adminError;
         }
 
         const { error: updateError } = await supabase.from('companies').update({ admin_id: adminUser.id }).eq('id', company.id);
         if (updateError) {
-            debug.error('Company update admin_id error:', updateError);
-            // Verify if this is fatal? Probably not, but worth logging.
+            // console.error('Company update admin_id error:', updateError);
         }
 
         res.status(201).json({ success: true, message: 'Company registration successful!', user: { id: adminUser.id } });
     } catch (error) {
-        debug.error('Company registration error:', error);
-
         // Provide user-friendly error messages
         let errorMessage = 'Registration failed';
         if (error.message?.includes('duplicate key')) {
@@ -401,7 +418,7 @@ router.get('/me', authenticateToken, async (req, res) => {
 
         // NEW: Backup check in subscriptions history if company record is out of sync
         if (user.company_id && !hasCompanySubscription) {
-            const { data: activeSub } = await supabase
+            const { data: activeSub = null } = await supabase
                 .from('subscriptions')
                 .select('*')
                 .eq('company_id', user.company_id)
@@ -412,7 +429,6 @@ router.get('/me', authenticateToken, async (req, res) => {
                 .maybeSingle();
 
             if (activeSub) {
-                console.log(`[Auth] Recovered active subscription for company ${user.company_id} via subscriptions table`);
                 hasCompanySubscription = true;
                 // Update local companyData for the response
                 companyData = companyData || { id: user.company_id };
@@ -444,11 +460,8 @@ router.get('/me', authenticateToken, async (req, res) => {
             created_at: user.created_at
         };
 
-        console.log(`[Auth] Profile for ${user.email}. EffectivelyCompany: ${isEffectivelyCompanyUser}, Sub: ${userResponse.subscription_status}`);
-
         res.json({ success: true, user: userResponse, user_type: user.user_type });
     } catch (e) {
-        debug.error('Get profile error:', e);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });

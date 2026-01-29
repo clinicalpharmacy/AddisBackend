@@ -1,6 +1,5 @@
 import express from 'express';
 import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -12,8 +11,6 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
     try {
         const { patientCode } = req.params;
 
-        debug.log(`📋 Fetching medication reconciliations for patient: ${patientCode}`);
-
         const { data, error } = await supabase
             .from('medication_reconciliation')
             .select('*')
@@ -21,11 +18,8 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
             .order('reconciliation_date', { ascending: false });
 
         if (error) {
-            debug.error('Supabase error:', error);
             throw error;
         }
-
-        debug.log(`✅ Found ${data?.length || 0} reconciliations`);
 
         res.json({
             success: true,
@@ -34,7 +28,6 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Get reconciliations error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to fetch reconciliations'
@@ -83,7 +76,6 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         res.json({ success: true, stats });
 
     } catch (error) {
-        debug.error('Get stats error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to get statistics'
@@ -103,12 +95,6 @@ router.post('/', authenticateToken, async (req, res) => {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
-
-        debug.log('📝 Creating medication reconciliation:', {
-            patient_code: reconciliationData.patient_code,
-            medication_name: reconciliationData.medication_name,
-            type: reconciliationData.reconciliation_type
-        });
 
         // Validate required fields
         if (!reconciliationData.patient_code) {
@@ -139,11 +125,8 @@ router.post('/', authenticateToken, async (req, res) => {
             .single();
 
         if (error) {
-            debug.error('Database error:', error);
             throw error;
         }
-
-        debug.log('✅ Reconciliation created successfully:', data.id);
 
         res.status(201).json({
             success: true,
@@ -152,7 +135,6 @@ router.post('/', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Create reconciliation error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to create reconciliation'
@@ -177,8 +159,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
         delete updateData.created_by;
         delete updateData.patient_code; // Don't allow changing patient
 
-        debug.log(`📝 Updating reconciliation: ${id}`);
-
         const { data, error } = await supabase
             .from('medication_reconciliation')
             .update(updateData)
@@ -187,7 +167,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
             .single();
 
         if (error) {
-            debug.error('Database error:', error);
             throw error;
         }
 
@@ -198,8 +177,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
             });
         }
 
-        debug.log('✅ Reconciliation updated successfully');
-
         res.json({
             success: true,
             reconciliation: data,
@@ -207,7 +184,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Update reconciliation error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to update reconciliation'
@@ -222,19 +198,14 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
 
-        debug.log(`🗑️ Deleting reconciliation: ${id}`);
-
         const { error } = await supabase
             .from('medication_reconciliation')
             .delete()
             .eq('id', id);
 
         if (error) {
-            debug.error('Database error:', error);
             throw error;
         }
-
-        debug.log('✅ Reconciliation deleted successfully');
 
         res.json({
             success: true,
@@ -242,7 +213,6 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Delete reconciliation error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to delete reconciliation'
@@ -275,7 +245,6 @@ router.get('/detail/:id', authenticateToken, async (req, res) => {
         res.json({ success: true, reconciliation: data });
 
     } catch (error) {
-        debug.error('Get reconciliation error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to fetch reconciliation'

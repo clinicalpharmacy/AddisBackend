@@ -1,7 +1,6 @@
 import express from 'express';
 import axios from 'axios';
 import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 import { getPlanDetails, calculateEndDate } from '../utils/helpers.js';
 
@@ -109,8 +108,6 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                         subscription_plan: payment.plan_id,
                         subscription_end_date: endDate
                     }).eq('company_id', user.company_id);
-
-                    console.log(`[Webhook] Company-wide access granted for company_id: ${user.company_id}`);
                 } else {
                     // Individual update
                     await supabase.from('users').update({
@@ -200,8 +197,6 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate
                                 }).eq('company_id', user.company_id);
-
-                                console.log(`[Subscription] Company-wide access granted for company_id: ${user.company_id}`);
                             } else {
                                 // Individual update
                                 await supabase.from('users').update({
@@ -209,7 +204,6 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate
                                 }).eq('id', user.id);
-                                console.log(`[Subscription] Individual access granted for user: ${user.id}`);
                             }
 
                             // Record in subscriptions history

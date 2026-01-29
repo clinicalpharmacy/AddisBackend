@@ -1,15 +1,13 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
-import { authenticateToken, requireAdmin, getUserAccessibleData } from '../middleware/authMiddleware.js';
+import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
 // Get pending approvals
 router.get('/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        debug.log('Fetching pending approvals...');
         if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
 
         const { data: pendingUsers, error } = await supabase
@@ -21,7 +19,6 @@ router.get('/pending-approvals', authenticateToken, requireAdmin, async (req, re
         if (error) throw error;
         res.json({ success: true, users: pendingUsers || [], count: pendingUsers?.length || 0 });
     } catch (error) {
-        debug.error('Get pending approvals error:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch pending approvals', details: error.message });
     }
 });
@@ -29,7 +26,6 @@ router.get('/pending-approvals', authenticateToken, requireAdmin, async (req, re
 // Get all users
 router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        debug.log('Fetching all users...');
         if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
 
         const { data: users, error } = await supabase
@@ -40,7 +36,6 @@ router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
         if (error) throw error;
         res.json({ success: true, users: users || [], count: users?.length || 0 });
     } catch (error) {
-        debug.error('Get users error:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch users', details: error.message });
     }
 });
@@ -152,14 +147,20 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!supabase) return res.status(503).json({ error: 'Database not configured' });
 
-        const [users, companies, pending, subs, payments, patients, meds] = await Promise.all([
+        const [users, companies, pending, subs, payments, patients, meds, doctors, nurses, pharmacists, students, labs, others] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false),
             supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
             supabase.from('payments').select('amount').eq('status', 'paid'),
             supabase.from('patients').select('*', { count: 'exact', head: true }),
-            supabase.from('medications').select('*', { count: 'exact', head: true })
+            supabase.from('medications').select('*', { count: 'exact', head: true }),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'doctor'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'nurse'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'pharmacist'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'student'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer'])
         ]);
 
         const total_revenue = payments.data?.reduce((s, p) => s + (p.amount || 0), 0) || 0;
@@ -179,7 +180,13 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 total_revenue,
                 total_patients: patients.count || 0,
                 total_medications: meds.count || 0,
-                user_growth: user_growth || 0
+                user_growth: user_growth || 0,
+                doctor_count: doctors.count || 0,
+                nurse_count: nurses.count || 0,
+                pharmacist_count: pharmacists.count || 0,
+                student_count: students.count || 0,
+                laboratory_count: labs.count || 0,
+                others_count: others.count || 0
             }
         });
     } catch (e) {
@@ -190,22 +197,18 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
 // Companies
 router.get('/companies', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        debug.log('Fetching all companies with explicit join...');
-        // Try with explicit FK name, if it fails, fallback to simple select
         let { data, error } = await supabase
             .from('companies')
             .select('*, users!admin_id(full_name, email)')
             .order('created_at', { ascending: false });
 
         if (error) {
-            debug.warn('Explicit join failed, trying standard join:', error.message);
             const fallback = await supabase
                 .from('companies')
                 .select('*, users(full_name, email)')
                 .order('created_at', { ascending: false });
 
             if (fallback.error) {
-                debug.warn('Standard join failed, trying simple select:', fallback.error.message);
                 const simple = await supabase
                     .from('companies')
                     .select('*')
@@ -224,7 +227,6 @@ router.get('/companies', authenticateToken, requireAdmin, async (req, res) => {
             count: data?.length || 0
         });
     } catch (e) {
-        debug.error('Get companies error:', e);
         res.status(500).json({ success: false, error: 'Internal Server Error', details: e.message });
     }
 });
@@ -268,7 +270,6 @@ router.post('/companies/:id/approve', authenticateToken, requireAdmin, async (re
 // Recent Activities
 router.get('/recent-activities', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        // Since we might not have an activities table, we'll return some recent approvals or registrations
         const { data: recentUsers } = await supabase
             .from('users')
             .select('full_name, email, created_at, role, approved')
@@ -294,9 +295,6 @@ router.get('/patients', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { data, error } = await supabase.from('patients').select('*').order('created_at', { ascending: false }).limit(200);
         if (error) throw error;
-
-        // Manual join for simplicity if needed, or just return patients
-        // For now, simple return as in original code
         res.json({ success: true, patients: data || [], count: data?.length || 0 });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
@@ -332,7 +330,5 @@ router.get('/subscriptions', authenticateToken, requireAdmin, async (req, res) =
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
-
-// Duplicate /companies removed
 
 export default router;

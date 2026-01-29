@@ -1,6 +1,5 @@
 import express from 'express';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken, getUserAccessibleData } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -58,7 +57,6 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
         if (error) throw error;
         res.json({ success: true, assessments: data || [] });
     } catch (e) {
-        debug.error('Get assessments error:', e);
         res.status(500).json({ success: false, error: 'Failed to fetch assessments' });
     }
 });
@@ -82,7 +80,6 @@ router.put('/assessments/drn/:id', authenticateToken, async (req, res) => {
         if (error) throw error;
         res.json({ success: true, assessment: data });
     } catch (e) {
-        debug.error('Update assessment error:', e);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
@@ -102,7 +99,6 @@ router.delete('/assessments/drn/:id', authenticateToken, async (req, res) => {
         if (error) throw error;
         res.json({ success: true, message: 'Assessment deleted' });
     } catch (e) {
-        debug.error('Delete assessment error:', e);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
@@ -157,7 +153,6 @@ router.get('/plans/patient/:patientCode', authenticateToken, async (req, res) =>
         if (error) throw error;
         res.json({ success: true, plans: data || [] });
     } catch (e) {
-        debug.error('Get plans error:', e);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
@@ -244,7 +239,8 @@ router.put('/outcomes/:id', authenticateToken, async (req, res) => {
 router.delete('/outcomes/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { error } = await (supabaseAdmin || supabase).from('patient_outcomes').delete().eq('id', id);
+        const db = supabaseAdmin || supabase;
+        const { error } = await db.from('patient_outcomes').delete().eq('id', id);
         if (error) throw error;
         res.json({ success: true, message: 'Outcome deleted' });
     } catch (e) {
@@ -263,14 +259,29 @@ router.post('/costs', authenticateToken, async (req, res) => {
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
-        const item = { ...req.body, user_id: req.user.userId, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-        // Logic for UUID fallback/int fallback handling omitted for brevity but should be included if crucial
-        // Simplified insert:
-        const { data, error } = await supabase.from('cost_analyses').insert([item]).select().single();
+        // UUID format check
+        const isUUID = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+
+        const item = {
+            ...req.body,
+            user_id: isUUID(req.user.userId) ? req.user.userId : null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        const targetDb = supabaseAdmin || supabase;
+        const { data, error } = await targetDb.from('cost_analyses').insert([item]).select();
+
         if (error) throw error;
-        res.status(201).json({ success: true, message: 'Saved', cost: data });
+
+        if (!data || data.length === 0) {
+            throw new Error('Failed to save cost analysis - no data returned');
+        }
+
+        res.status(201).json({ success: true, message: 'Saved', cost: data[0] });
     } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
+        console.error('Error saving cost analysis:', e);
+        res.status(500).json({ success: false, error: e.message || 'Internal server error' });
     }
 });
 
@@ -278,11 +289,20 @@ router.put('/costs/:id', authenticateToken, async (req, res) => {
     try {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
-        const { data, error } = await supabase.from('cost_analyses').update(updates).eq('id', req.params.id).select().single();
+
+        const targetDb = supabaseAdmin || supabase;
+        const { data, error } = await targetDb.from('cost_analyses').update(updates).eq('id', req.params.id).select();
+
         if (error) throw error;
-        res.json({ success: true, message: 'Updated', cost: data });
+
+        if (!data || data.length === 0) {
+            throw new Error('Cost analysis not found or update failed');
+        }
+
+        res.json({ success: true, message: 'Updated', cost: data[0] });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Error' });
+        console.error('Error updating cost analysis:', e);
+        res.status(500).json({ success: false, error: e.message || 'Internal server error' });
     }
 });
 
@@ -312,7 +332,7 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
         if (error) throw error;
         res.json({ success: true, costs: data || [] });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Error' });
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
@@ -323,7 +343,6 @@ router.delete('/costs/:id', authenticateToken, async (req, res) => {
         if (error) throw error;
         res.json({ success: true, message: 'Cost analysis deleted' });
     } catch (e) {
-        debug.error('Delete cost error:', e);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
@@ -377,7 +396,6 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
 
         if (patientError) throw patientError;
         if (!patient) {
-            debug.warn(`🚫 Access denied to patient ${patientCode} for user ${userId}`);
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
         }
 
@@ -409,7 +427,6 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
         if (error) throw error;
         res.status(201).json({ success: true, medication: data });
     } catch (e) {
-        debug.error('Post medication error:', e);
         res.status(500).json({ success: false, error: e.message || 'Failed' });
     }
 });
@@ -432,7 +449,8 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
 router.delete('/medication-history/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { error } = await (supabaseAdmin || supabase).from('medication_history').delete().eq('id', id);
+        const db = supabaseAdmin || supabase;
+        const { error } = await db.from('medication_history').delete().eq('id', id);
         if (error) throw error;
         res.json({ success: true, message: 'Deleted' });
     } catch (e) {
@@ -444,7 +462,8 @@ router.delete('/medication-history/:id', authenticateToken, async (req, res) => 
 router.delete('/medications/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { error } = await (supabaseAdmin || supabase).from('medication_history').delete().eq('id', id);
+        const db = supabaseAdmin || supabase;
+        const { error } = await db.from('medication_history').delete().eq('id', id);
         if (error) throw error;
         res.json({ success: true, message: 'Deleted' });
     } catch (e) {
@@ -464,7 +483,6 @@ router.post('/vitals', authenticateToken, async (req, res) => {
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').insert([vitalsData]).select().single();
         if (error) {
             // Fallback for missing table - many systems might not have it yet
-            debug.warn('vitals_history table might not exist, skipping history save');
             return res.status(200).json({ success: true, skipped: true, message: 'Saved to patient record only' });
         }
         res.json({ success: true, vitals: data });
@@ -538,7 +556,6 @@ router.post('/labs-history', authenticateToken, async (req, res) => {
         };
         const { data, error } = await (supabaseAdmin || supabase).from('labs_history').insert([labsData]).select().single();
         if (error) {
-            debug.warn('labs_history table might not exist');
             return res.status(200).json({ success: true, skipped: true });
         }
         res.json({ success: true, labs: data });
@@ -613,7 +630,6 @@ router.post('/reconciliations', authenticateToken, async (req, res) => {
         };
         const { data, error } = await (supabaseAdmin || supabase).from('medication_reconciliations').insert([reconData]).select().single();
         if (error) {
-            debug.error('❌ Error saving reconciliation:', error);
             throw error;
         }
         res.status(201).json({ success: true, reconciliation: data });

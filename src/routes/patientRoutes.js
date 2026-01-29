@@ -1,6 +1,5 @@
 import express from 'express';
-import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken, getUserAccessibleData } from '../middleware/authMiddleware.js';
 import { sanitizeSearchQuery } from '../utils/helpers.js';
 
@@ -40,7 +39,6 @@ router.get('/', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('Get patients error:', error);
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
@@ -69,8 +67,6 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type || 'individual';
 
-        debug.log(`🔍 Fetching patient by code: ${patientCode} for user ${userId}`);
-
         let query = supabase.from('patients').select('*').eq('patient_code', patientCode);
 
         if (userRole !== 'admin') {
@@ -86,7 +82,6 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
         res.json({ success: true, patient: data });
 
     } catch (error) {
-        debug.error('Get patient by code error:', error);
         res.status(500).json({ success: false, error: error.message || 'Failed' });
     }
 });
@@ -99,8 +94,6 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type || 'individual';
-
-        debug.log(`🔍 Fetching patient by identifier: ${identifier} for user ${userId}`);
 
         if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
 
@@ -124,19 +117,16 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const { data, error } = await query.maybeSingle();
 
         if (error) {
-            debug.error('Supabase fetch error:', error);
             throw error;
         }
 
         if (!data) {
-            debug.warn(`Patient not found with identifier: ${identifier}`);
             return res.status(404).json({ success: false, error: 'Patient not found or access denied' });
         }
 
         res.json({ success: true, patient: data });
 
     } catch (error) {
-        debug.error('Get patient by identifier error:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to fetch patient data',
@@ -152,21 +142,18 @@ router.post('/', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type || 'individual';
         const patientData = req.body;
 
-        debug.log(`➕ Creating patient for user ${userId} (${userAccountType})`, { name: patientData.full_name });
-
         if (!patientData.full_name) {
             return res.status(400).json({ success: false, error: 'Patient name is required' });
         }
 
-        // ✅ INDIVIDUAL SUBSCRIPTION LIMIT: Only 1 patient allowed
-        if (userAccountType === 'individual') {
+        // ✅ INDIVIDUAL SUBSCRIPTION LIMIT: Only 1 patient allowed (Exempt company users)
+        if (userAccountType === 'individual' && !req.user.company_id) {
             const { data: existingPatients, error: countError } = await supabase
                 .from('patients')
                 .select('id', { count: 'exact' })
                 .eq('user_id', userId);
 
             if (countError) {
-                debug.error('Error checking patient count:', countError);
                 return res.status(500).json({ success: false, error: 'Failed to verify patient limit' });
             }
 
@@ -183,6 +170,41 @@ router.post('/', authenticateToken, async (req, res) => {
 
         let user_id = userId;
         let created_by = userId;
+
+        // --- CONSTRAINT FIX: Sync user to 'users' table if missing (for company users) ---
+        if ((req.user.account_type === 'company_user' || req.user.role === 'company_admin') && userId) {
+            try {
+                const db = supabaseAdmin || supabase;
+                const { data: exists } = await db.from('users').select('id').eq('id', userId).maybeSingle();
+                if (!exists) {
+
+
+                    // Fetch source record to get password_hash and other required fields
+                    const { data: sourceUser } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
+
+                    if (sourceUser) {
+                        const { error: syncErr } = await db.from('users').insert([{
+                            id: userId,
+                            email: sourceUser.email,
+                            full_name: sourceUser.full_name,
+                            role: sourceUser.role,
+                            company_id: sourceUser.company_id,
+                            approved: true,
+                            password_hash: sourceUser.password_hash || 'SYNCED_PROVIDER' // Satisfy not-null constraint
+                        }]);
+
+                        if (syncErr) {
+                            console.error('❌ [FIX] Sync failed:', syncErr.message);
+                        } else {
+
+                        }
+                    } else {
+                        console.warn('⚠️ [FIX] Source user not found in company_users, cannot sync.');
+                    }
+                }
+            } catch (err) { console.warn('Sync exception:', err.message); }
+        }
+        // -------------------------------------------------------------------------------
 
         // Note: We no longer force patient ownership to the company admin here.
         // The data isolation logic in authMiddleware now handles shared access 
@@ -210,24 +232,18 @@ router.post('/', authenticateToken, async (req, res) => {
             }
         });
 
-        const { data, error } = await supabase.from('patients').insert([patientToCreate]).select().single();
+        const targetDb = supabaseAdmin || supabase;
+        const { data, error } = await targetDb.from('patients').insert([patientToCreate]).select().single();
 
         if (error) {
-            debug.error('❌ Supabase patient insert error:', error);
             if (error.code === '23503') { // Foreign key retry
-                debug.warn('Retrying insert without created_by...');
-                delete patientToCreate.created_by;
-                const { data: d2, error: e2 } = await supabase.from('patients').insert([patientToCreate]).select().single();
-                if (e2) throw e2;
-                return res.status(201).json({ success: true, patient: d2 });
+                // If it's still failing, we might need to check if user_id even exists in users table
             }
             throw error;
         }
 
-        debug.success(`✅ Patient created: ${data.id} (${data.patient_code})`);
         res.status(201).json({ success: true, message: 'Created', patient: data });
     } catch (e) {
-        debug.error('❌ Create patient error:', e);
         res.status(500).json({ success: false, error: e.message || 'Failed' });
     }
 });
@@ -240,8 +256,6 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
 
         const isUuid = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-
-        debug.log(`🔄 Updating patient ${identifier} (Type: ${isUuid ? 'ID' : 'Code'})`);
 
         let query = supabase.from('patients').select('*');
         if (isUuid) {
@@ -269,13 +283,12 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
             }
         });
 
-        const { data, error } = await supabase.from('patients').update(updates).eq('id', existing.id).select().single();
+        const db = supabaseAdmin || supabase;
+        const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
         if (error) throw error;
 
-        debug.success(`✅ Patient ${existing.id} updated`);
         res.json({ success: true, message: 'Updated', patient: data });
     } catch (e) {
-        debug.error('❌ Update patient error:', e);
         res.status(500).json({ success: false, error: e.message || 'Failed' });
     }
 });
@@ -286,8 +299,6 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const patientCode = req.params.patientCode;
         const userId = req.user.userId;
         const userRole = req.user.role;
-
-        debug.log(`🔄 Updating patient by code: ${patientCode}`);
 
         const { data: existing, error: fetchError } = await supabase
             .from('patients')
@@ -312,7 +323,6 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
 
         res.json({ success: true, message: 'Updated', patient: data });
     } catch (e) {
-        debug.error('❌ Update patient by code error:', e);
         res.status(500).json({ success: false, error: e.message || 'Failed' });
     }
 });
@@ -328,7 +338,15 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
 
         const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
-        const hasPermission = userRole === 'admin' || (accessibleIds && accessibleIds.includes(patient.user_id));
+        const isAdmin = userRole === 'admin';
+        const isIndividual = req.user.account_type === 'individual';
+
+        // Security: Individual users are not allowed to delete patients
+        if (isIndividual && !isAdmin) {
+            return res.status(403).json({ success: false, error: 'Individual subscription users cannot delete patient records. They can only update existing ones.' });
+        }
+
+        const hasPermission = isAdmin || (accessibleIds && accessibleIds.includes(patient.user_id));
 
         if (!hasPermission) return res.status(403).json({ success: false, error: 'Permission denied' });
 
@@ -355,11 +373,20 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
         if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
 
         const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
-        const hasPermission = userRole === 'admin' || (accessibleIds && accessibleIds.includes(patient.user_id));
+        const isAdmin = userRole === 'admin';
+        const isIndividual = req.user.account_type === 'individual';
+
+        // Security: Individual users are not allowed to delete patients
+        if (isIndividual && !isAdmin) {
+            return res.status(403).json({ success: false, error: 'Individual subscription users cannot delete patient records. They can only update existing ones.' });
+        }
+
+        const hasPermission = isAdmin || (accessibleIds && accessibleIds.includes(patient.user_id));
 
         if (!hasPermission) return res.status(403).json({ success: false, error: 'Permission denied' });
 
-        await supabase.from('patients').delete().eq('id', patient.id);
+        const db = supabaseAdmin || supabase;
+        await db.from('patients').delete().eq('id', patient.id);
         res.json({ success: true, message: 'Deleted' });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });

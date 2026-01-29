@@ -1,6 +1,5 @@
 import express from 'express';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -16,7 +15,6 @@ router.get('/useful-links', authenticateToken, async (req, res) => {
         if (error) throw error;
         res.json({ success: true, links: data || [] });
     } catch (e) {
-        debug.error('Error fetching useful links:', e);
         res.status(500).json({ success: false, error: 'Failed to fetch links' });
     }
 });
@@ -49,7 +47,6 @@ router.post('/useful-links', authenticateToken, requireAdmin, async (req, res) =
         if (error) throw error;
         res.status(201).json({ success: true, link: data });
     } catch (e) {
-        debug.error('Error creating useful link:', e);
         res.status(500).json({ success: false, error: 'Failed to create link' });
     }
 });
@@ -71,7 +68,6 @@ router.put('/useful-links/:id', authenticateToken, requireAdmin, async (req, res
         if (error) throw error;
         res.json({ success: true, link: data });
     } catch (e) {
-        debug.error('Error updating useful link:', e);
         res.status(500).json({ success: false, error: 'Failed to update link' });
     }
 });
@@ -88,7 +84,6 @@ router.delete('/useful-links/:id', authenticateToken, requireAdmin, async (req, 
         if (error) throw error;
         res.json({ success: true, message: 'Link deleted successfully' });
     } catch (e) {
-        debug.error('Error deleting useful link:', e);
         res.status(500).json({ success: false, error: 'Failed to delete link' });
     }
 });

@@ -1,6 +1,5 @@
 import express from 'express';
 import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -14,7 +13,6 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
         const companyId = req.user.company_id;
-        const accountType = req.user.account_type;
 
         // Verify user is a company admin or super admin
         if (userRole !== 'company_admin' && userRole !== 'admin') {
@@ -30,8 +28,6 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
                 error: 'Company ID not found'
             });
         }
-
-        debug.log(`📊 Generating performance report for company ${companyId}`);
 
         // Get both company admin (from users) and pharmacists (from company_users)
         const [adminsResult, pharmacistsResult] = await Promise.all([
@@ -129,8 +125,8 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
             const userId = user.id;
 
             // Count patients for this user
-            const userPatients = patientsData.data?.filter(p => p.user_id === userId) || [];
-            const patientCodes = userPatients.map(p => p.patient_code);
+            const userPatientsSubset = patientsData.data?.filter(p => p.user_id === userId) || [];
+            const patientCodes = userPatientsSubset.map(p => p.patient_code);
 
             // Count medications for this user's patients
             const userMedications = medicationsData.data?.filter(m =>
@@ -164,13 +160,13 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
                 (new Date() - new Date(user.created_at || user.joined_at)) / (1000 * 60 * 60 * 24)
             );
 
-            const patientsPerDay = daysSinceJoined > 0 ? (userPatients.length / daysSinceJoined).toFixed(2) : userPatients.length;
+            const patientsPerDay = daysSinceJoined > 0 ? (userPatientsSubset.length / daysSinceJoined).toFixed(2) : userPatientsSubset.length;
 
             // Recent activity (last 30 days)
             const thirtyDaysAgo = new Date();
             thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-            const recentPatients = userPatients.filter(p =>
+            const recentPatients = userPatientsSubset.filter(p =>
                 new Date(p.created_at) >= thirtyDaysAgo
             ).length;
 
@@ -191,7 +187,7 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
                 days_active: Math.max(0, daysSinceJoined),
 
                 // Overall metrics
-                total_patients: userPatients.length,
+                total_patients: userPatientsSubset.length,
                 total_medications: userMedications.length,
                 total_assessments: userAssessments.length,
                 total_plans: userPlans.length,
@@ -200,8 +196,8 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
 
                 // Activity rates
                 patients_per_day: parseFloat(patientsPerDay),
-                avg_medications_per_patient: userPatients.length > 0
-                    ? (userMedications.length / userPatients.length).toFixed(2)
+                avg_medications_per_patient: userPatientsSubset.length > 0
+                    ? (userMedications.length / userPatientsSubset.length).toFixed(2)
                     : 0,
 
                 // Recent activity (last 30 days)
@@ -256,7 +252,6 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
         res.json({ success: true, report });
 
     } catch (error) {
-        debug.error('Company performance report error:', error);
         res.status(500).json({
             success: false,
             error: 'Failed to generate performance report',
@@ -273,11 +268,10 @@ router.get('/user-performance/:userId', authenticateToken, async (req, res) => {
         const requesterId = req.user.userId;
         const requesterRole = req.user.role;
         const companyId = req.user.company_id;
-        const accountType = req.user.account_type;
         const targetUserId = req.params.userId;
 
         // Verify requester is company admin or viewing their own data
-        if (accountType !== 'company_admin' && requesterRole !== 'admin' && requesterId !== targetUserId) {
+        if (requesterRole !== 'company_admin' && requesterRole !== 'admin' && requesterId !== targetUserId) {
             return res.status(403).json({
                 success: false,
                 error: 'Access denied'
@@ -328,7 +322,6 @@ router.get('/user-performance/:userId', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        debug.error('User performance error:', error);
         res.status(500).json({
             success: false,
             error: 'Failed to get user performance'

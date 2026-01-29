@@ -1,6 +1,5 @@
 import express from 'express';
 import { supabase } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken, getUserAccessibleData } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -32,8 +31,6 @@ router.get('/can-i-see-others-data', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
         const userEmail = req.user.email;
-
-        console.log('🔍 Testing data visibility for:', { userId, userRole, userEmail });
 
         // Test 1: Try to get ALL patients (what regular endpoint does)
         const { data: allPatients } = await supabase
@@ -94,7 +91,6 @@ router.get('/can-i-see-others-data', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Test error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -105,8 +101,6 @@ router.get('/who-owns-patients', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
         const userEmail = req.user.email;
-
-        console.log('🔍 Investigating patient ownership for:', { userId, userRole, userEmail });
 
         // STEP 1: Get ALL patients in system
         const { data: allPatients, error: patientsError } = await supabase
@@ -163,7 +157,6 @@ router.get('/who-owns-patients', authenticateToken, async (req, res) => {
         }
 
         // STEP 5: Test what this user can see through regular endpoint
-        console.log('🔍 Testing what user can see through /api/patients...');
         // getUserAccessibleData imported from middleware
         const accessibleUserIds = await getUserAccessibleData(userId, userRole, req.user.company_id);
 
@@ -250,7 +243,6 @@ router.get('/who-owns-patients', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Ownership investigation error:', error);
         res.status(500).json({
             success: false,
             error: error.message,

@@ -1,12 +1,10 @@
 import express from 'express';
-import { supabase, supabaseAdmin } from '../config/supabase.js';
-import { debug } from '../utils/logger.js';
+import { supabase } from '../config/supabase.js';
 
 const router = express.Router();
 
 router.get('/', async (req, res) => {
     try {
-        debug.log('Health check requested (Optimized)');
         let dbStatus = 'not_configured';
         let userCount = 0;
         let adminExists = false;
@@ -16,7 +14,6 @@ router.get('/', async (req, res) => {
 
         if (supabase) {
             try {
-                debug.log('Pinging database...');
                 const { count: users, error: usersError } = await supabase.from('users').select('*', { count: 'exact', head: true });
 
                 if (!usersError) {
@@ -39,7 +36,6 @@ router.get('/', async (req, res) => {
                 }
             } catch (error) {
                 dbStatus = 'error';
-                debug.error('DB Health Error:', error);
             }
         }
 

@@ -3,7 +3,6 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase.js';
 import { config } from '../config/env.js';
-import { debug } from '../utils/logger.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 import { isValidEmail } from '../utils/helpers.js';
 
@@ -82,7 +81,6 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
         const { data, error } = await supabase.from('company_users').insert([newUser]).select().single();
         if (error) throw error;
 
-        console.log(`[Company] Created user ${email} with subscription: ${newUser.subscription_status}`);
         res.json({ success: true, message: 'User created', user: data });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -90,20 +88,10 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
 });
 
 router.post('/users/:userId/approve', authenticateToken, requireCompanyAdmin, async (req, res) => {
-    // Only needed if we implement approval for company users, but currently they are auto-approved. 
-    // Implementation from server.js:
     try {
         const { userId } = req.params;
         const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
         if (!admin) return res.status(404).json({ error: 'Company not found' });
-
-        // Assuming users table here based on original code, OR company_users. 
-        // Original code line 6346 queries 'users' table. 
-        // But company users created above are in 'company_users'.
-        // The original code seems to mix up 'users' and 'company_users' or handles both.
-        // Given the context of "Company Users" feature recently added, it should probably target company_users.
-        // However line 6347 selects from 'users'. 
-        // Let's stick to what the original code did: query 'users'.
 
         const { data: target } = await supabase.from('users').select('company_id').eq('id', userId).single();
         if (!target) return res.status(404).json({ error: 'User not found' });
