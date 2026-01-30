@@ -319,6 +319,34 @@ router.put('/medication-availability/:id', authenticateToken, async (req, res) =
 });
 
 /**
+ * @route GET /api/admin/medication-availability/comments
+ * @desc Admin: Get recent comments/chats across all posts
+ */
+router.get('/admin/medication-availability/comments', authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { data, error } = await supabase
+            .from('medication_availability_comments')
+            .select(`
+                *,
+                user:user_id ( full_name, email, role ),
+                recipient:recipient_id ( full_name, email ),
+                post:post_id ( medication_name, status )
+            `)
+            .order('created_at', { ascending: false })
+            .limit(100);
+
+        if (error) throw error;
+        res.json({ success: true, comments: data || [] });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
  * @route DELETE /api/medication-availability/:id
  * @desc Delete your own availability post
  */

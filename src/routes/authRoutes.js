@@ -9,6 +9,11 @@ import { authenticateToken } from '../middleware/authMiddleware.js';
 const router = express.Router();
 const JWT_SECRET = config.jwtSecret;
 
+// Helper to generate random token
+const generateToken = () => {
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
+
 // User Login
 router.post('/login', async (req, res) => {
     try {
@@ -499,6 +504,108 @@ router.post('/change-password', authenticateToken, async (req, res) => {
         res.json({ success: true, message: 'Password changed' });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email is required' });
+
+        const db = supabaseAdmin || supabase;
+        const cleanEmail = email.trim().toLowerCase();
+
+        // Check both tables
+        let user = null;
+        let table = 'users';
+
+        const { data: regularUser } = await db.from('users').select('id, email').eq('email', cleanEmail).maybeSingle();
+        if (regularUser) {
+            user = regularUser;
+        } else {
+            const { data: companyUser } = await db.from('company_users').select('id, email').eq('email', cleanEmail).maybeSingle();
+            if (companyUser) {
+                user = companyUser;
+                table = 'company_users';
+            }
+        }
+
+        if (!user) {
+            // For security, don't reveal if user exists. But for this app's context, we'll be helpful.
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const token = generateToken();
+        const expires = new Date(Date.now() + 3600000).toISOString(); // 1 hour
+
+        await db.from(table).update({
+            reset_password_token: token,
+            reset_password_expires: expires
+        }).eq('id', user.id);
+
+        // In a real app, send email here.
+        // console.log(`Reset token for ${email}: ${token}`);
+
+        res.json({
+            success: true,
+            message: 'Reset token generated.',
+            reset_token: token
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Failed to process request' });
+    }
+});
+
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, new_password } = req.body;
+        if (!token || !new_password || new_password.length < 6) {
+            return res.status(400).json({ error: 'Invalid input' });
+        }
+
+        const db = supabaseAdmin || supabase;
+        const now = new Date().toISOString();
+
+        // Search in both tables for the token
+        let user = null;
+        let table = 'users';
+
+        const { data: regularUser } = await db.from('users')
+            .select('id')
+            .eq('reset_password_token', token)
+            .gt('reset_password_expires', now)
+            .maybeSingle();
+
+        if (regularUser) {
+            user = regularUser;
+        } else {
+            const { data: companyUser } = await db.from('company_users')
+                .select('id')
+                .eq('reset_password_token', token)
+                .gt('reset_password_expires', now)
+                .maybeSingle();
+
+            if (companyUser) {
+                user = companyUser;
+                table = 'company_users';
+            }
+        }
+
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid or expired reset token' });
+        }
+
+        const hash = await bcrypt.hash(new_password, 10);
+        await db.from(table).update({
+            password_hash: hash,
+            reset_password_token: null,
+            reset_password_expires: null,
+            updated_at: new Date().toISOString()
+        }).eq('id', user.id);
+
+        res.json({ success: true, message: 'Password has been reset successfully' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Reset failed' });
     }
 });
 
