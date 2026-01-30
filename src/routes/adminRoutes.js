@@ -30,7 +30,7 @@ router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
 
         const { data: users, error } = await supabase
             .from('users')
-            .select('id, email, full_name, role, account_type, approved, institution, company_id, subscription_status, subscription_plan, created_at, phone, country, region, license_number')
+            .select('id, email, full_name, role, account_type, approved, institution, company_id, subscription_status, subscription_plan, subscription_end_date, created_at, phone, country, region, license_number')
             .order('created_at', { ascending: false });
 
         if (error) throw error;
@@ -324,10 +324,31 @@ router.get('/payments', authenticateToken, requireAdmin, async (req, res) => {
 // Admin Subscriptions
 router.get('/subscriptions', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const { data } = await supabase.from('subscriptions').select('*, users(full_name, email, institution)').order('created_at', { ascending: false }).limit(100);
-        res.json({ success: true, subscriptions: data || [], count: data?.length || 0 });
+        if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
+
+        // Fetch subscriptions, users, and companies independently to avoid join errors if relationships aren't formal
+        const [subsResult, usersResult, compsResult] = await Promise.all([
+            supabase.from('subscriptions').select('*').order('created_at', { ascending: false }).limit(400),
+            supabase.from('users').select('id, full_name, email, institution'),
+            supabase.from('companies').select('id, company_name, email')
+        ]);
+
+        if (subsResult.error) throw subsResult.error;
+
+        // Manual merge to provide names even if DB schema lacks relationships
+        const usersMap = (usersResult.data || []).reduce((acc, user) => ({ ...acc, [user.id]: user }), {});
+        const compsMap = (compsResult.data || []).reduce((acc, comp) => ({ ...acc, [comp.id]: comp }), {});
+
+        const mergedData = (subsResult.data || []).map(sub => ({
+            ...sub,
+            users: usersMap[sub.user_id] || null,
+            companies: compsMap[sub.company_id] || null
+        }));
+
+        res.json({ success: true, subscriptions: mergedData, count: mergedData.length });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('❌ Error fetching subscriptions:', e);
+        res.status(500).json({ success: false, error: 'Failed to fetch subscriptions', details: e.message });
     }
 });
 
