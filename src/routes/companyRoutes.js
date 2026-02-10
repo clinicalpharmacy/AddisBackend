@@ -137,6 +137,51 @@ router.delete('/users/:userId', authenticateToken, requireCompanyAdmin, async (r
     }
 });
 
+router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmin, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        if (!admin) return res.status(404).json({ error: 'Company not found' });
+
+        const { data: user } = await supabase.from('company_users').select('is_blocked, blocked_by, company_id').eq('id', userId).single();
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (user.company_id !== admin.company_id) return res.status(403).json({ error: 'Not authorized for this user' });
+
+        // Hierarchical Restriction: Company Admin cannot unblock someone blocked by Super Admin
+        if (user.is_blocked && user.blocked_by === 'superadmin') {
+            return res.status(403).json({
+                success: false,
+                error: 'This user was blocked by a System Administrator. Only a System Administrator can unblock them.'
+            });
+        }
+
+        const newStatus = !user.is_blocked;
+        const { error } = await supabase.from('company_users')
+            .update({
+                is_blocked: newStatus,
+                blocked_by: newStatus ? 'company_admin' : null,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', userId);
+
+        if (error) throw error;
+
+        // Sync with users table
+        await supabase.from('users').update({
+            is_blocked: newStatus,
+            blocked_by: newStatus ? 'company_admin' : null
+        }).eq('id', userId);
+
+        res.json({
+            success: true,
+            message: newStatus ? 'User blocked' : 'User unblocked',
+            is_blocked: newStatus
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Auth Routes for Company Users
 router.post('/auth/login', async (req, res) => {
     try {
@@ -145,6 +190,10 @@ router.post('/auth/login', async (req, res) => {
 
         const { data: user } = await supabase.from('company_users').select('*').eq('email', email.toLowerCase()).maybeSingle();
         if (!user || !user.approved) return res.status(401).json({ error: 'Invalid or pending approval' });
+
+        if (user.is_blocked) {
+            return res.status(403).json({ error: 'Your account has been blocked. Please contact your administrator.' });
+        }
 
         const valid = await bcrypt.compare(password, user.password_hash);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });

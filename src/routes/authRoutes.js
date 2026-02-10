@@ -78,6 +78,13 @@ router.post('/login', async (req, res) => {
             });
         }
 
+        if (user.is_blocked) {
+            return res.status(403).json({
+                success: false,
+                error: 'Your account has been blocked. Please contact your administrator.'
+            });
+        }
+
         let companyId = user.company_id;
         const db_search = db;
 

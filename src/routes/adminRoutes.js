@@ -142,18 +142,67 @@ router.put('/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     }
 });
 
+// Toggle block user (superadmin)
+router.post('/users/:id/toggle-block', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const userId = req.params.id;
+        if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
+
+        // Check users table
+        const { data: user, error: fetchError } = await supabase.from('users').select('is_blocked, email').eq('id', userId).maybeSingle();
+
+        // If not in users, check company_users
+        let targetTable = 'users';
+        let currentStatus = user?.is_blocked;
+        let email = user?.email;
+
+        if (!user) {
+            const { data: cUser } = await supabase.from('company_users').select('is_blocked, email').eq('id', userId).maybeSingle();
+            if (!cUser) return res.status(404).json({ success: false, error: 'User not found in any table' });
+            targetTable = 'company_users';
+            currentStatus = cUser.is_blocked;
+            email = cUser.email;
+        }
+
+        const newStatus = !currentStatus;
+
+        // Update the primary table
+        const { error: updateError } = await supabase.from(targetTable).update({
+            is_blocked: newStatus,
+            blocked_by: newStatus ? 'superadmin' : null,
+            updated_at: new Date().toISOString()
+        }).eq('id', userId);
+
+        if (updateError) throw updateError;
+
+        // Sync with the other table if the user exists there too
+        const otherTable = targetTable === 'users' ? 'company_users' : 'users';
+        await supabase.from(otherTable).update({
+            is_blocked: newStatus,
+            blocked_by: newStatus ? 'superadmin' : null
+        }).eq('id', userId);
+
+        res.json({
+            success: true,
+            message: newStatus ? `User ${email} blocked` : `User ${email} unblocked`,
+            is_blocked: newStatus
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to toggle block status', details: error.message });
+    }
+});
+
 // Stats
 router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!supabase) return res.status(503).json({ error: 'Database not configured' });
 
-        const [users, companies, pending, subs, payments, patients, meds, doctors, nurses, pharmacists, students, labs, others] = await Promise.all([
+        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false),
             supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
             supabase.from('payments').select('amount').eq('status', 'paid'),
-            supabase.from('patients').select('*', { count: 'exact', head: true }),
             supabase.from('medications').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'doctor'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'nurse'),
@@ -178,7 +227,6 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 pending_approvals: pending.count || 0,
                 active_subscriptions: subs.count || 0,
                 total_revenue,
-                total_patients: patients.count || 0,
                 total_medications: meds.count || 0,
                 user_growth: user_growth || 0,
                 doctor_count: doctors.count || 0,
@@ -287,26 +335,6 @@ router.get('/recent-activities', authenticateToken, requireAdmin, async (req, re
         res.json({ success: true, activities });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed to fetch activities' });
-    }
-});
-
-// Admin patients view
-router.get('/patients', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('patients').select('*').order('created_at', { ascending: false }).limit(200);
-        if (error) throw error;
-        res.json({ success: true, patients: data || [], count: data?.length || 0 });
-    } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
-    }
-});
-
-router.get('/all-patients', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const { data: allPatients } = await supabase.from('patients').select('*, users(email, full_name)').order('created_at', { ascending: false });
-        res.json({ success: true, patients: allPatients || [], count: allPatients?.length || 0 });
-    } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
     }
 });
 
