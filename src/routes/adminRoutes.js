@@ -30,7 +30,7 @@ router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
 
         const { data: users, error } = await supabase
             .from('users')
-            .select('id, email, full_name, role, account_type, approved, institution, company_id, subscription_status, subscription_plan, subscription_end_date, created_at, phone, country, region, license_number')
+            .select('id, email, full_name, role, account_type, approved, institution, company_id, subscription_status, subscription_plan, subscription_end_date, created_at, phone, country, region, license_number, is_blocked, blocked_by')
             .order('created_at', { ascending: false });
 
         if (error) throw error;
@@ -185,7 +185,8 @@ router.post('/users/:id/toggle-block', authenticateToken, requireAdmin, async (r
         res.json({
             success: true,
             message: newStatus ? `User ${email} blocked` : `User ${email} unblocked`,
-            is_blocked: newStatus
+            is_blocked: newStatus,
+            blocked_by: newStatus ? 'superadmin' : null
         });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Failed to toggle block status', details: error.message });
@@ -197,7 +198,7 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!supabase) return res.status(503).json({ error: 'Database not configured' });
 
-        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others] = await Promise.all([
+        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others, blocked] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false),
@@ -209,7 +210,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'pharmacist'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'student'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
-            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer'])
+            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer']),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_blocked', true)
         ]);
 
         const total_revenue = payments.data?.reduce((s, p) => s + (p.amount || 0), 0) || 0;
@@ -228,6 +230,7 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 active_subscriptions: subs.count || 0,
                 total_revenue,
                 total_medications: meds.count || 0,
+                blocked_users: blocked.count || 0,
                 user_growth: user_growth || 0,
                 doctor_count: doctors.count || 0,
                 nurse_count: nurses.count || 0,
