@@ -234,24 +234,20 @@ router.post('/medication-availability/:id/comments', authenticateToken, async (r
  */
 router.post('/medication-availability', authenticateToken, async (req, res) => {
     try {
-        const { medication_name, quantity, condition, notes, expiry_date, status, contact_phone } = req.body;
+        const { medication_needed, search_date, notes } = req.body;
         const myId = getUserId(req.user);
 
         if (!isValidUUID(myId)) return res.status(401).json({ error: 'Session expired or invalid. Please re-login.' });
 
-        if (!medication_name) {
+        if (!medication_needed) {
             return res.status(400).json({ success: false, error: 'Medication name is required' });
         }
 
         const newPost = {
             user_id: myId,
-            medication_name,
-            quantity: quantity || null,
-            condition: condition || 'New/Sealed',
+            medication_needed,
+            search_date: search_date === '' ? null : search_date,
             notes,
-            contact_phone: contact_phone || null,
-            expiry_date: expiry_date === '' ? null : expiry_date,
-            status: status || 'available',
             created_at: new Date().toISOString()
         };
 
@@ -277,7 +273,7 @@ router.post('/medication-availability', authenticateToken, async (req, res) => {
 router.put('/medication-availability/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { medication_name, quantity, condition, notes, expiry_date, status, contact_phone } = req.body;
+        const { medication_needed, search_date, notes } = req.body;
         const myId = getUserId(req.user);
 
         // Find post and check ownership
@@ -294,13 +290,9 @@ router.put('/medication-availability/:id', authenticateToken, async (req, res) =
         }
 
         const updateData = {
-            medication_name,
-            quantity: quantity || null,
-            condition: condition || 'New/Sealed',
+            medication_needed,
+            search_date: search_date === '' ? null : search_date,
             notes,
-            contact_phone: contact_phone || null,
-            expiry_date: expiry_date === '' ? null : expiry_date,
-            status: status || 'available',
             updated_at: new Date().toISOString()
         };
 
@@ -334,7 +326,7 @@ router.get('/admin/medication-availability/comments', authenticateToken, async (
                 *,
                 user:user_id ( full_name, email, role ),
                 recipient:recipient_id ( full_name, email ),
-                post:post_id ( medication_name, status )
+                post:post_id ( medication_needed, status )
             `)
             .order('created_at', { ascending: false })
             .limit(100);
