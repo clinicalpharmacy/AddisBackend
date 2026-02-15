@@ -63,12 +63,8 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
         const userId = getUserId(req.user);
 
         if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid post ID' });
+        if (!isValidUUID(userId)) return res.status(401).json({ error: 'Session error: Invalid user ID. Please re-login.' });
 
-        if (!isValidUUID(userId)) {
-            return res.status(401).json({ error: 'Session error: Invalid user ID. Please re-login.' });
-        }
-
-        // First, get the post to know who the owner is
         const { data: post, error: postError } = await supabase
             .from('medication_availability')
             .select('user_id')
@@ -76,39 +72,38 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
             .single();
 
         if (postError || !post) return res.status(404).json({ error: 'Post not found' });
-
         const ownerId = post.user_id;
 
-        if (!isValidUUID(ownerId)) {
-            return res.status(500).json({ error: `System error: Medication post has no valid owner.` });
-        }
+        if (!isValidUUID(ownerId)) return res.status(500).json({ error: `System error: Medication post has no valid owner.` });
 
-        let query = supabase
-            .from('medication_availability_comments')
-            .select(`
-                *,
-                user:user_id (
-                    full_name,
-                    institution
-                )
-            `)
-            .eq('post_id', id);
+        let query;
 
-        // Security: Filter messages to be "secrete" (private between two users)
-        if (userId === post.user_id) {
-            // I am the poster. I must specify who I'm chatting with.
+        if (req.user.role === 'admin') {
+            // Admin sees all comments
+            query = supabase
+                .from('medication_availability_comments')
+                .select(`*, user:user_id ( full_name, institution )`)
+                .eq('post_id', id);
+        } else if (userId === ownerId) {
+            // Poster sees conversation with specific user
             if (!chat_with || !isValidUUID(chat_with)) {
                 return res.json({ success: true, comments: [], message: 'Valid chat_with required' });
             }
-            query = query.or(`and(user_id.eq.${userId},recipient_id.eq.${chat_with}),and(user_id.eq.${chat_with},recipient_id.eq.${userId})`);
+            query = supabase
+                .from('medication_availability_comments')
+                .select(`*, user:user_id ( full_name, institution )`)
+                .or(`and(user_id.eq.${userId},recipient_id.eq.${chat_with}),and(user_id.eq.${chat_with},recipient_id.eq.${userId})`);
         } else {
-            // I am an inquirer. I only see my conversation with the poster.
-            query = query.or(`and(user_id.eq.${userId},recipient_id.eq.${ownerId}),and(user_id.eq.${ownerId},recipient_id.eq.${userId})`);
+            // Inquirer sees only conversation with poster
+            query = supabase
+                .from('medication_availability_comments')
+                .select(`*, user:user_id ( full_name, institution )`)
+                .or(`and(user_id.eq.${userId},recipient_id.eq.${ownerId}),and(user_id.eq.${ownerId},recipient_id.eq.${userId})`);
         }
 
         const { data, error } = await query.order('created_at', { ascending: true });
-
         if (error) throw error;
+
         res.json({ success: true, comments: data || [] });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -117,7 +112,7 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
 
 /**
  * @route GET /api/medication-availability/:id/conversations
- * @desc Get list of users who have messaged about this post (for the poster)
+ * @desc Get list of users who have messaged about this post (for the poster or admin)
  */
 router.get('/medication-availability/:id/conversations', authenticateToken, async (req, res) => {
     try {
@@ -125,7 +120,6 @@ router.get('/medication-availability/:id/conversations', authenticateToken, asyn
         if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid ID format' });
         const myId = getUserId(req.user);
 
-        // Check if I am the owner
         const { data: post, error: postError } = await supabase
             .from('medication_availability')
             .select('user_id')
@@ -133,12 +127,12 @@ router.get('/medication-availability/:id/conversations', authenticateToken, asyn
             .single();
 
         if (postError || !post) return res.status(404).json({ error: 'Post not found' });
+
         if (post.user_id !== myId && req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Only the poster can see the conversation list' });
+            return res.status(403).json({ error: 'Only the poster or admin can see the conversation list' });
         }
 
-        // Find all unique users who messaged about this post (excluding the owner)
-        const { data, error } = await supabase
+        let query = supabase
             .from('medication_availability_comments')
             .select(`
                 user_id,
@@ -148,12 +142,16 @@ router.get('/medication-availability/:id/conversations', authenticateToken, asyn
                     institution
                 )
             `)
-            .eq('post_id', id)
-            .neq('user_id', post.user_id);
+            .eq('post_id', id);
 
+        // Exclude poster themselves only if requester is not admin
+        if (req.user.role !== 'admin') {
+            query = query.neq('user_id', post.user_id);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
 
-        // Unique the list of users
         const usersMap = new Map();
         data.forEach(item => {
             if (item.user) {
@@ -178,12 +176,9 @@ router.post('/medication-availability/:id/comments', authenticateToken, async (r
         const myId = getUserId(req.user);
 
         if (!isValidUUID(myId)) return res.status(401).json({ error: 'Auth error: Invalid user identity.' });
-
         if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid ID format' });
-
         if (!content) return res.status(400).json({ error: 'Content is required' });
 
-        // Get post to determine recipient
         const { data: post, error: postError } = await supabase
             .from('medication_availability')
             .select('user_id')
@@ -193,12 +188,9 @@ router.post('/medication-availability/:id/comments', authenticateToken, async (r
         if (postError || !post) return res.status(404).json({ error: 'Post not found' });
 
         let finalRecipient = recipient_id;
-
         if (myId === post.user_id) {
-            // I am the poster, I must provide a recipient
             if (!finalRecipient || !isValidUUID(finalRecipient)) return res.status(400).json({ error: 'As the poster, you must provide a valid user ID to reply to.' });
         } else {
-            // I am an inquirer, recipient is automatically the poster
             finalRecipient = post.user_id;
         }
 
@@ -214,10 +206,7 @@ router.post('/medication-availability/:id/comments', authenticateToken, async (r
             }])
             .select(`
                 *,
-                user:user_id (
-                    full_name,
-                    institution
-                )
+                user:user_id ( full_name, institution )
             `)
             .single();
 
@@ -238,10 +227,7 @@ router.post('/medication-availability', authenticateToken, async (req, res) => {
         const myId = getUserId(req.user);
 
         if (!isValidUUID(myId)) return res.status(401).json({ error: 'Session expired or invalid. Please re-login.' });
-
-        if (!medication_needed) {
-            return res.status(400).json({ success: false, error: 'Medication name is required' });
-        }
+        if (!medication_needed) return res.status(400).json({ success: false, error: 'Medication name is required' });
 
         const newPost = {
             user_id: myId,
@@ -257,9 +243,7 @@ router.post('/medication-availability', authenticateToken, async (req, res) => {
             .select()
             .single();
 
-        if (error) {
-            throw error;
-        }
+        if (error) throw error;
         res.status(201).json({ success: true, post: data });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message || 'Failed to create post' });
@@ -276,7 +260,6 @@ router.put('/medication-availability/:id', authenticateToken, async (req, res) =
         const { medication_needed, search_date, notes } = req.body;
         const myId = getUserId(req.user);
 
-        // Find post and check ownership
         const { data: post, error: fetchError } = await supabase
             .from('medication_availability')
             .select('user_id')
@@ -284,7 +267,6 @@ router.put('/medication-availability/:id', authenticateToken, async (req, res) =
             .single();
 
         if (fetchError || !post) return res.status(404).json({ error: 'Post not found' });
-
         if (post.user_id !== myId && req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Unauthorized to edit this post' });
         }
@@ -347,7 +329,6 @@ router.delete('/medication-availability/:id', authenticateToken, async (req, res
         const { id } = req.params;
         const myId = getUserId(req.user);
 
-        // Find post and check ownership
         const { data: post, error: fetchError } = await supabase
             .from('medication_availability')
             .select('user_id')
@@ -355,8 +336,6 @@ router.delete('/medication-availability/:id', authenticateToken, async (req, res
             .single();
 
         if (fetchError || !post) return res.status(404).json({ error: 'Post not found' });
-
-        // Admins can delete anything, others only their own
         if (post.user_id !== myId && req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Unauthorized' });
         }
