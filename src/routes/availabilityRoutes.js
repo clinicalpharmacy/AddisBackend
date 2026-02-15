@@ -35,9 +35,9 @@ router.get('/medication-availability', authenticateToken, async (req, res) => {
                 )
             `)
             .order('created_at', { ascending: false });
-        
+
         if (error) throw error;
-        
+
         // Hide poster name for non-admins
         const posts = data.map(post => {
             if (req.user.role !== 'admin') {
@@ -45,9 +45,12 @@ router.get('/medication-availability', authenticateToken, async (req, res) => {
             }
             return post;
         });
-        
-        res.json({ success: true, posts });
 
+        res.json({ success: true, posts });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message || 'Failed to fetch posts' });
+    }
+});
 
 /**
  * @route GET /api/medication-availability/:id/comments
@@ -99,9 +102,8 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
         }
 
         const { data, error } = await query.order('created_at', { ascending: true });
-
         if (error) throw error;
-        
+
         // Hide comment authors for non-admins if they are the poster
         const comments = data.map(c => {
             if (req.user.role !== 'admin' && c.user_id === post.user_id) {
@@ -109,9 +111,12 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
             }
             return c;
         });
-        
-        res.json({ success: true, comments });
 
+        res.json({ success: true, comments });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 /**
  * @route GET /api/medication-availability/:id/conversations
@@ -165,8 +170,12 @@ router.get('/medication-availability/:id/conversations', authenticateToken, asyn
                 usersMap.set(item.user_id, userCopy);
             }
         });
-        
+
         res.json({ success: true, conversations: Array.from(usersMap.values()) });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 /**
  * @route POST /api/medication-availability/:id/comments
