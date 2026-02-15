@@ -35,22 +35,19 @@ router.get('/medication-availability', authenticateToken, async (req, res) => {
                 )
             `)
             .order('created_at', { ascending: false });
+        
+        if (error) throw error;
+        
+        // Hide poster name for non-admins
+        const posts = data.map(post => {
+            if (req.user.role !== 'admin') {
+                return { ...post, user: { ...post.user, full_name: 'Anonymous' } };
+            }
+            return post;
+        });
+        
+        res.json({ success: true, posts });
 
-        if (error) {
-            console.error('Join error, trying simple fetch:', error);
-            const { data: simpleData, error: simpleError } = await supabase
-                .from('medication_availability')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            if (simpleError) throw simpleError;
-            return res.json({ success: true, posts: simpleData || [] });
-        }
-        res.json({ success: true, posts: data || [] });
-    } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
-    }
-});
 
 /**
  * @route GET /api/medication-availability/:id/comments
@@ -102,13 +99,19 @@ router.get('/medication-availability/:id/comments', authenticateToken, async (re
         }
 
         const { data, error } = await query.order('created_at', { ascending: true });
-        if (error) throw error;
 
-        res.json({ success: true, comments: data || [] });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
+        if (error) throw error;
+        
+        // Hide comment authors for non-admins if they are the poster
+        const comments = data.map(c => {
+            if (req.user.role !== 'admin' && c.user_id === post.user_id) {
+                return { ...c, user: { ...c.user, full_name: 'Anonymous' } };
+            }
+            return c;
+        });
+        
+        res.json({ success: true, comments });
+
 
 /**
  * @route GET /api/medication-availability/:id/conversations
@@ -155,15 +158,15 @@ router.get('/medication-availability/:id/conversations', authenticateToken, asyn
         const usersMap = new Map();
         data.forEach(item => {
             if (item.user) {
-                usersMap.set(item.user_id, item.user);
+                let userCopy = { ...item.user };
+                if (req.user.role !== 'admin' && item.user.id === post.user_id) {
+                    userCopy.full_name = 'Anonymous';
+                }
+                usersMap.set(item.user_id, userCopy);
             }
         });
-
+        
         res.json({ success: true, conversations: Array.from(usersMap.values()) });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
 
 /**
  * @route POST /api/medication-availability/:id/comments
