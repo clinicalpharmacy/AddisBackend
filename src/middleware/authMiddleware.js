@@ -35,7 +35,7 @@ export const requireAdmin = (req, res, next) => {
         });
     }
 
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
         return res.status(403).json({
             success: false,
             error: 'Admin access required.',
@@ -64,7 +64,7 @@ export const requireCompanyAdmin = async (req, res, next) => {
 // Check if user has access to patient
 export async function checkUserPatientAccess(userId, patientId, userRole) {
     try {
-        if (userRole === 'admin') {
+        if (userRole === 'admin' || userRole === 'superadmin') {
             return true;
         }
 
@@ -98,7 +98,7 @@ export const checkPatientOwnership = async (req, res, next) => {
 export async function getUserAccessibleData(userId, userRole, userCompanyId, userAccountType = 'individual') {
     try {
         // 1. ADMIN - Sees everything
-        if (userRole === 'admin') {
+        if (userRole === 'admin' || userRole === 'superadmin') {
             return null;
         }
 
