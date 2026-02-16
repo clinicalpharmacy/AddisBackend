@@ -8,3 +8,4 @@ app.listen(PORT, () => {
     debug.success(`Server running on port ${PORT}`);
     debug.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
+

@@ -1,0 +1,119 @@
+═══════════════════════════════════════════════════════════════════
+PREGNANCY CATEGORY X RULE - READY TO PASTE INTO ADMIN UI
+═══════════════════════════════════════════════════════════════════
+
+STEP 1: BASIC INFORMATION
+═══════════════════════════════════════════════════════════════════
+
+Rule Name:
+Pregnancy - Category X Medications Contraindicated
+
+Rule Type:
+pregnancy_check
+
+Severity:
+critical
+
+DTP Category:
+contraindication
+
+Description:
+Detects use of absolutely contraindicated medications (FDA Category X) in pregnant patients
+
+Applies To:
+pregnancy
+
+Is Active:
+✓ YES (check the box)
+
+
+═══════════════════════════════════════════════════════════════════
+STEP 2: RULE CONDITION (Copy everything below)
+═══════════════════════════════════════════════════════════════════
+
+{
+  "all": [
+    {
+      "fact": "is_pregnant",
+      "operator": "equals",
+      "value": true
+    },
+    {
+      "any": [
+        {"fact": "medications", "operator": "contains", "value": "isotretinoin"},
+        {"fact": "medications", "operator": "contains", "value": "accutane"},
+        {"fact": "medications", "operator": "contains", "value": "thalidomide"},
+        {"fact": "medications", "operator": "contains", "value": "methotrexate"},
+        {"fact": "medications", "operator": "contains", "value": "misoprostol"},
+        {"fact": "medications", "operator": "contains", "value": "finasteride"},
+        {"fact": "medications", "operator": "contains", "value": "dutasteride"},
+        {"fact": "medications", "operator": "contains", "value": "warfarin"},
+        {"fact": "medications", "operator": "contains", "value": "statins"},
+        {"fact": "medications", "operator": "contains", "value": "atorvastatin"},
+        {"fact": "medications", "operator": "contains", "value": "simvastatin"},
+        {"fact": "medications", "operator": "contains", "value": "rosuvastatin"},
+        {"fact": "medications", "operator": "contains", "value": "lovastatin"},
+        {"fact": "medications", "operator": "contains", "value": "pravastatin"},
+        {"fact": "medications", "operator": "contains", "value": "ribavirin"},
+        {"fact": "medications", "operator": "contains", "value": "leflunomide"},
+        {"fact": "medications", "operator": "contains", "value": "mycophenolate"},
+        {"fact": "medications", "operator": "contains", "value": "teriparatide"},
+        {"fact": "medications", "operator": "contains", "value": "raloxifene"},
+        {"fact": "medications", "operator": "contains", "value": "clomiphene"},
+        {"fact": "medications", "operator": "contains", "value": "danazol"},
+        {"fact": "medications", "operator": "contains", "value": "diethylstilbestrol"},
+        {"fact": "medications", "operator": "contains", "value": "estazolam"},
+        {"fact": "medications", "operator": "contains", "value": "flurazepam"},
+        {"fact": "medications", "operator": "contains", "value": "quazepam"},
+        {"fact": "medications", "operator": "contains", "value": "temazepam"},
+        {"fact": "medications", "operator": "contains", "value": "triazolam"}
+      ]
+    }
+  ]
+}
+
+
+═══════════════════════════════════════════════════════════════════
+STEP 3: RULE ACTION (Copy everything below)
+═══════════════════════════════════════════════════════════════════
+
+{
+  "message": "CONTRAINDICATED: Pregnancy Category X medication detected",
+  "recommendation": "CRITICAL ALERT: Patient is pregnant ({{pregnancy_weeks}} weeks) and is taking a Category X medication that is ABSOLUTELY CONTRAINDICATED in pregnancy.\n\nIMMEDIATE ACTIONS REQUIRED:\n1. STOP the contraindicated medication immediately\n2. Notify prescribing physician urgently\n3. Assess fetal exposure duration and timing\n4. Consider teratology consultation\n5. Discuss risks with patient\n6. Document in medical record\n7. Replace with pregnancy-safe alternative if needed\n8. Arrange appropriate fetal monitoring\n\nCommon Category X medications include:\n- Isotretinoin (Accutane) - severe birth defects\n- Thalidomide - limb malformations\n- Methotrexate - neural tube defects\n- Warfarin - fetal warfarin syndrome\n- Statins - skeletal malformations\n- Misoprostol - uterine contractions, abortion",
+  "severity": "critical"
+}
+
+
+═══════════════════════════════════════════════════════════════════
+TESTING CHECKLIST
+═══════════════════════════════════════════════════════════════════
+
+After creating the rule, test it:
+
+1. ✓ Create a patient
+2. ✓ Set pregnancy status:
+   - Check "Is Pregnant" box
+   - Set Pregnancy Weeks: 12
+   - Set Trimester: First
+3. ✓ Add medication:
+   - Drug Name: accutane (or Accutane or isotretinoin)
+   - Status: Active
+   - Start Date: Today
+4. ✓ Run CDSS Analysis
+5. ✓ Expected: Critical alert appears
+
+
+═══════════════════════════════════════════════════════════════════
+TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════
+
+If no alert appears:
+
+□ Is the rule "Active"? (green toggle in admin)
+□ Is patient marked as pregnant? (is_pregnant = true)
+□ Is medication status "Active"?
+□ Did you spell medication name correctly?
+□ Did you click "Analyze Patient" in CDSS?
+□ Check browser console (F12) for errors
+
+═══════════════════════════════════════════════════════════════════

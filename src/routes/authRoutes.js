@@ -5,6 +5,7 @@ import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { isValidEmail } from '../utils/helpers.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
+import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 const JWT_SECRET = config.jwtSecret;
@@ -68,6 +69,16 @@ router.post('/login', async (req, res) => {
         if (!validPassword) {
             const errorMsg = process.env.NODE_ENV === 'development' ? 'Debug: Password mismatch' : 'Invalid email or password';
             return res.status(401).json({ success: false, error: errorMsg });
+        }
+
+        // Check email verification
+        if (user.email_verified === false) {
+            return res.status(401).json({
+                success: false,
+                error: 'Please verify your email address before logging in. Check your inbox for the verification link.',
+                email_verification_required: true,
+                email: user.email
+            });
         }
 
         if (user.role !== 'admin' && !user.approved) {
@@ -234,6 +245,11 @@ router.post('/register', async (req, res) => {
         if (existingUser) return res.status(400).json({ success: false, error: 'Email already registered' });
 
         const hashedPassword = await bcrypt.hash(password.trim(), 10);
+
+        // Generate email verification token
+        const verificationToken = generateToken();
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
         const userData = {
             email: trimmedEmail,
             password_hash: hashedPassword,
@@ -248,6 +264,9 @@ router.post('/register', async (req, res) => {
             role: role || 'pharmacist',
             account_type: account_type || 'individual',
             subscription_status: 'inactive',
+            email_verified: false,
+            email_verification_token: verificationToken,
+            email_verification_expires: verificationExpires,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -255,12 +274,18 @@ router.post('/register', async (req, res) => {
         const { data: user, error: insertError } = await supabase.from('users').insert([userData]).select().single();
         if (insertError) throw insertError;
 
+        // Send verification email (don't wait for it to complete)
+        sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken).catch(err => {
+            console.error('Failed to send verification email:', err);
+        });
+
         res.status(201).json({
             success: true,
-            message: 'Registration successful! Please wait for admin approval.',
-            user: { id: user.id, email: user.email }, // minimal response
+            message: 'Registration successful! Please check your email to verify your account.',
+            user: { id: user.id, email: user.email },
             id: user.id,
-            userId: user.id
+            userId: user.id,
+            email_verification_required: true
         });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Registration failed', details: error.message });
@@ -340,6 +365,10 @@ router.post('/register-company', async (req, res) => {
             throw companyError;
         }
 
+        // Generate email verification token for admin
+        const verificationToken = generateToken();
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
         const adminData = {
             email: trimmedAdminEmail, password_hash: hashedPassword,
             full_name: admin_full_name.trim(), phone: admin_phone.trim(),
@@ -349,6 +378,9 @@ router.post('/register-company', async (req, res) => {
             tin_number: tin_number?.trim() || '',
             approved: false, role: 'company_admin', account_type: 'company',
             subscription_status: 'inactive',
+            email_verified: false,
+            email_verification_token: verificationToken,
+            email_verification_expires: verificationExpires,
             created_at: new Date().toISOString(), updated_at: new Date().toISOString()
         };
 
@@ -365,7 +397,17 @@ router.post('/register-company', async (req, res) => {
             // console.error('Company update admin_id error:', updateError);
         }
 
-        res.status(201).json({ success: true, message: 'Company registration successful!', user: { id: adminUser.id } });
+        // Send verification email to admin (don't wait for it to complete)
+        sendVerificationEmail(trimmedAdminEmail, admin_full_name.trim(), verificationToken).catch(err => {
+            console.error('Failed to send verification email:', err);
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Company registration successful! Please check your email to verify your account.',
+            user: { id: adminUser.id },
+            email_verification_required: true
+        });
     } catch (error) {
         // Provide user-friendly error messages
         let errorMessage = 'Registration failed';
@@ -613,6 +655,164 @@ router.post('/reset-password', async (req, res) => {
         res.json({ success: true, message: 'Password has been reset successfully' });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Reset failed' });
+    }
+});
+
+// Verify Email
+router.post('/verify-email', async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) {
+            return res.status(400).json({ success: false, error: 'Verification token is required' });
+        }
+
+        const db = supabaseAdmin || supabase;
+        const now = new Date().toISOString();
+
+        // Search in both tables for the token
+        let user = null;
+        let table = 'users';
+
+        const { data: regularUser } = await db.from('users')
+            .select('*')
+            .eq('email_verification_token', token)
+            .gt('email_verification_expires', now)
+            .maybeSingle();
+
+        if (regularUser) {
+            user = regularUser;
+        } else {
+            const { data: companyUser } = await db.from('company_users')
+                .select('*')
+                .eq('email_verification_token', token)
+                .gt('email_verification_expires', now)
+                .maybeSingle();
+
+            if (companyUser) {
+                user = companyUser;
+                table = 'company_users';
+            }
+        }
+
+        if (!user) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid or expired verification token. Please request a new verification email.'
+            });
+        }
+
+        // Check if already verified
+        if (user.email_verified) {
+            return res.json({
+                success: true,
+                message: 'Email already verified. You can now log in.',
+                already_verified: true
+            });
+        }
+
+        // Update user to mark email as verified
+        await db.from(table).update({
+            email_verified: true,
+            email_verification_token: null,
+            email_verification_expires: null,
+            updated_at: new Date().toISOString()
+        }).eq('id', user.id);
+
+        // Send welcome email (don't wait for it to complete)
+        sendWelcomeEmail(user.email, user.full_name).catch(err => {
+            console.error('Failed to send welcome email:', err);
+        });
+
+        res.json({
+            success: true,
+            message: 'Email verified successfully! Your account is now pending admin approval. You will be notified once approved.',
+            email_verified: true
+        });
+    } catch (e) {
+        console.error('Email verification error:', e);
+        res.status(500).json({ success: false, error: 'Verification failed' });
+    }
+});
+
+// Resend Verification Email
+router.post('/resend-verification', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ success: false, error: 'Email is required' });
+        }
+
+        const db = supabaseAdmin || supabase;
+        const cleanEmail = email.trim().toLowerCase();
+
+        // Check both tables
+        let user = null;
+        let table = 'users';
+
+        const { data: regularUser } = await db.from('users')
+            .select('*')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+
+        if (regularUser) {
+            user = regularUser;
+        } else {
+            const { data: companyUser } = await db.from('company_users')
+                .select('*')
+                .eq('email', cleanEmail)
+                .maybeSingle();
+
+            if (companyUser) {
+                user = companyUser;
+                table = 'company_users';
+            }
+        }
+
+        if (!user) {
+            // For security, don't reveal if user exists
+            return res.json({
+                success: true,
+                message: 'If an account exists with this email, a verification link has been sent.'
+            });
+        }
+
+        // Check if already verified
+        if (user.email_verified) {
+            return res.json({
+                success: true,
+                message: 'Email already verified. You can log in now.',
+                already_verified: true
+            });
+        }
+
+        // Generate new verification token
+        const verificationToken = generateToken();
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
+        // Update user with new token
+        await db.from(table).update({
+            email_verification_token: verificationToken,
+            email_verification_expires: verificationExpires,
+            updated_at: new Date().toISOString()
+        }).eq('id', user.id);
+
+        // Send verification email
+        const emailSent = await sendVerificationEmail(cleanEmail, user.full_name, verificationToken);
+
+        if (!emailSent) {
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to send verification email. Please try again later.'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Verification email sent! Please check your inbox.'
+        });
+    } catch (e) {
+        console.error('Resend verification error:', e);
+        res.status(500).json({ success: false, error: 'Failed to resend verification email' });
     }
 });
 

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pregnancy Rule Debugger</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #666;
+            margin-top: 30px;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border-left: 4px solid #2196F3;
+            border-radius: 4px;
+        }
+        .success {
+            border-left-color: #4CAF50;
+            background: #f1f8f4;
+        }
+        .error {
+            border-left-color: #f44336;
+            background: #fef1f0;
+        }
+        .warning {
+            border-left-color: #ff9800;
+            background: #fff8f0;
+        }
+        button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #1976D2;
+        }
+        pre {
+            background: #263238;
+            color: #aed581;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status.yes {
+            background: #4CAF50;
+            color: white;
+        }
+        .status.no {
+            background: #f44336;
+            color: white;
+        }
+        .code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Pregnancy Rule Debugger</h1>
+        <p>This tool helps you debug why the pregnancy contraindication rule isn't triggering.</p>
+        
+        <button onclick="runFullDiagnostic()">🚀 Run Full Diagnostic</button>
+        <button onclick="clearResults()">🗑️ Clear Results</button>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function runFullDiagnostic() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<h2>Running diagnostics...</h2>';
+            
+            let html = '';
+            
+            // Test 1: Check if we can access the API
+            html += '<h2>📡 Step 1: API Connection Test</h2>';
+            try {
+                const response = await fetch('/api/clinical-rules');
+                if (response.ok) {
+                    html += '<div class="section success">✅ API is accessible</div>';
+                    const data = await response.json();
+                    
+                    // Check for pregnancy rule
+                    const pregnancyRules = data.rules?.filter(r => 
+                        r.rule_name.toLowerCase().includes('pregnancy')
+                    ) || [];
+                    
+                    html += `<div class="section">
+                        <strong>Total Rules:</strong> ${data.rules?.length || 0}<br>
+                        <strong>Pregnancy Rules Found:</strong> ${pregnancyRules.length}
+                    </div>`;
+                    
+                    if (pregnancyRules.length > 0) {
+                        html += '<div class="section success">';
+                        pregnancyRules.forEach(rule => {
+                            html += `
+                                <strong>${rule.rule_name}</strong>
+                                <span class="status ${rule.is_active ? 'yes' : 'no'}">
+                                    ${rule.is_active ? 'ACTIVE' : 'INACTIVE'}
+                                </span><br>
+                                Severity: <span class="code">${rule.severity}</span><br>
+                                Type: <span class="code">${rule.rule_type}</span><br><br>
+                            `;
+                        });
+                        html += '</div>';
+                    } else {
+                        html += '<div class="section error">❌ No pregnancy rules found! You need to create the rule first.</div>';
+                    }
+                } else {
+                    html += '<div class="section error">❌ API returned error: ' + response.status + '</div>';
+                }
+            } catch (error) {
+                html += '<div class="section error">❌ Cannot connect to API: ' + error.message + '</div>';
+            }
+            
+            // Test 2: Check patient data
+            html += '<h2>👤 Step 2: Patient Data Check</h2>';
+            html += '<div class="section warning">⚠️ This requires you to have a patient selected in your app.<br>Open this page from the CDSS page with a patient selected.</div>';
+            
+            if (typeof patientData !== 'undefined') {
+                html += '<div class="section success">✅ Patient data found</div>';
+                html += '<div class="section">';
+                html += `<strong>Patient Code:</strong> <span class="code">${patientData.patient_code || 'N/A'}</span><br>`;
+                html += `<strong>Is Pregnant:</strong> <span class="status ${patientData.is_pregnant ? 'yes' : 'no'}">${patientData.is_pregnant ? 'YES' : 'NO'}</span><br>`;
+                html += `<strong>Pregnancy Weeks:</strong> <span class="code">${patientData.pregnancy_weeks || 'Not set'}</span><br>`;
+                html += `<strong>Pregnancy Trimester:</strong> <span class="code">${patientData.pregnancy_trimester || 'Not set'}</span><br>`;
+                html += '</div>';
+                
+                if (!patientData.is_pregnant) {
+                    html += '<div class="section error">❌ PROBLEM: Patient is not marked as pregnant!<br><br><strong>FIX:</strong> Go to Patient Details and check the "Is Pregnant" checkbox.</div>';
+                }
+            } else {
+                html += '<div class="section error">❌ No patient data available. Make sure you have a patient selected.</div>';
+            }
+            
+            // Test 3: Check medications
+            html += '<h2>💊 Step 3: Medication Data Check</h2>';
+            if (typeof patientData !== 'undefined' && patientData.patient_code) {
+                try {
+                    const medResponse = await fetch(`/api/medication-history/patient/${patientData.patient_code}`);
+                    if (medResponse.ok) {
+                        const medData = await medResponse.json();
+                        const medications = medData.medications || [];
+                        
+                        html += `<div class="section success">✅ Found ${medications.length} medication(s)</div>`;
+                        
+                        if (medications.length > 0) {
+                            const contraindicated = [
+                                'isotretinoin', 'accutane', 'thalidomide', 'methotrexate', 
+                                'misoprostol', 'finasteride', 'dutasteride', 'warfarin',
+                                'atorvastatin', 'simvastatin', 'rosuvastatin', 'lovastatin', 'pravastatin'
+                            ];
+                            
+                            html += '<div class="section"><strong>Medications:</strong><br><br>';
+                            let foundContraindicated = false;
+                            
+                            medications.forEach(med => {
+                                const drugName = (med.drug_name || '').toLowerCase();
+                                const isActive = med.status === 'Active' || med.is_active === true;
+                                const isContraindicated = contraindicated.some(c => drugName.includes(c));
+                                
+                                if (isContraindicated && isActive) foundContraindicated = true;
+                                
+                                html += `
+                                    📌 <strong>${med.drug_name || 'Unknown'}</strong>
+                                    <span class="status ${isActive ? 'yes' : 'no'}">${isActive ? 'ACTIVE' : 'INACTIVE'}</span>
+                                    ${isContraindicated ? '<span class="status no">CONTRAINDICATED</span>' : ''}
+                                    <br>
+                                `;
+                            });
+                            html += '</div>';
+                            
+                            if (!foundContraindicated) {
+                                html += '<div class="section error">❌ PROBLEM: No active contraindicated medications found!<br><br><strong>FIX:</strong> Add a medication like "accutane" or "isotretinoin" with Active status.</div>';
+                            } else {
+                                html += '<div class="section success">✅ Found active contraindicated medication(s)!</div>';
+                            }
+                        } else {
+                            html += '<div class="section error">❌ PROBLEM: No medications found!<br><br><strong>FIX:</strong> Add a medication to the patient.</div>';
+                        }
+                    } else {
+                        html += '<div class="section error">❌ Cannot fetch medications: ' + medResponse.status + '</div>';
+                    }
+                } catch (error) {
+                    html += '<div class="section error">❌ Error fetching medications: ' + error.message + '</div>';
+                }
+            }
+            
+            // Test 4: Final verdict
+            html += '<h2>🎯 Step 4: Final Analysis</h2>';
+            if (typeof patientData !== 'undefined') {
+                const isPregnant = patientData.is_pregnant === true;
+                // We'll check this after medication fetch
+                html += '<div class="section">';
+                html += `<strong>Should the rule trigger?</strong><br><br>`;
+                html += `✓ Patient is pregnant: <span class="status ${isPregnant ? 'yes' : 'no'}">${isPregnant ? 'YES' : 'NO'}</span><br>`;
+                html += `✓ Has contraindicated medication: Check medications above<br>`;
+                html += `✓ Rule exists and is active: Check Step 1 above<br>`;
+                html += '</div>';
+                
+                if (isPregnant) {
+                    html += '<div class="section success">✅ If you have an active contraindicated medication and the rule exists, it SHOULD trigger!</div>';
+                } else {
+                    html += '<div class="section error">❌ Patient must be marked as pregnant for the rule to trigger.</div>';
+                }
+            }
+            
+            // Test 5: Manual test
+            html += '<h2>🧪 Step 5: Manual Rule Test</h2>';
+            html += '<div class="section">';
+            html += '<p>Run this in your browser console (F12) on the CDSS page:</p>';
+            html += '<pre>// Test the rule manually\nconst testFacts = {\n  is_pregnant: true,\n  medications: [\'accutane\'],\n  medication_names: [\'accutane\']\n};\n\n// Check if condition matches\nconst hasContraindicated = testFacts.medications.some(med => \n  med.toLowerCase().includes(\'accutane\')\n);\n\nconsole.log(\'Is pregnant:\', testFacts.is_pregnant);\nconsole.log(\'Has accutane:\', hasContraindicated);\nconsole.log(\'Should trigger:\', testFacts.is_pregnant && hasContraindicated);</pre>';
+            html += '</div>';
+            
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
