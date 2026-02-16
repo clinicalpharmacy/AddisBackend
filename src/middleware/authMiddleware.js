@@ -97,9 +97,16 @@ export const checkPatientOwnership = async (req, res, next) => {
 // Data access isolation helper (from server.js)
 export async function getUserAccessibleData(userId, userRole, userCompanyId, userAccountType = 'individual') {
     try {
-        // 1. ADMIN - Sees everything
-        if (userRole === 'admin' || userRole === 'superadmin') {
+        // 1. SUPERADMIN - Full bypass (returns null)
+        if (userRole === 'superadmin') {
             return null;
+        }
+
+        // 2. ADMIN - Sees everything but still subject to approval/verification
+        if (userRole === 'admin') {
+            const { data: allUsers } = await supabase.from('users').select('id');
+            const userIds = allUsers?.map(u => u.id) || [userId];
+            return userIds;
         }
 
         let companyId = userCompanyId;

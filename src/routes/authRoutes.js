@@ -71,8 +71,8 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, error: errorMsg });
         }
 
-        // Check email verification - Skip for high-level admins
-        if (user.email_verified === false && user.role !== 'admin' && user.role !== 'superadmin') {
+        // Check email verification - Skip ONLY for superadmin
+        if (user.email_verified === false && user.role !== 'superadmin') {
             return res.status(401).json({
                 success: false,
                 error: 'Please verify your email address before logging in. Check your inbox for the verification link.',
@@ -81,7 +81,8 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        if (user.role !== 'admin' && user.role !== 'superadmin' && !user.approved) {
+        // Check approval - Skip ONLY for superadmin
+        if (user.role !== 'superadmin' && !user.approved) {
             return res.status(401).json({
                 success: false,
                 error: 'Your account is pending approval. Please wait for approval before logging in.',
