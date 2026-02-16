@@ -71,8 +71,8 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, error: errorMsg });
         }
 
-        // Check email verification - Skip for admin and superadmin
-        if (user.email_verified === false && user.role !== 'admin' && user.role !== 'superadmin') {
+        // Check email verification - Skip for admin, superadmin, or already approved users
+        if (user.email_verified === false && user.role !== 'admin' && user.role !== 'superadmin' && !user.approved) {
             return res.status(401).json({
                 success: false,
                 error: 'Please verify your email address before logging in. Check your inbox for the verification link.',
@@ -147,6 +147,7 @@ router.post('/login', async (req, res) => {
                         role: user.role,
                         company_id: companyId,
                         approved: true,
+                        email_verified: user.email_verified,
                         password_hash: user.password_hash // Store hash for potential login fallback
                     }]);
                 }
