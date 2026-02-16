@@ -26,7 +26,24 @@ const app = express();
 // Middleware
 app.use(helmet());
 app.use(cors({
-    origin: config.frontendUrl || '*',
+    origin: (origin, callback) => {
+        const allowedOrigins = [
+            'http://localhost:5173',
+            'http://localhost:3000',
+            'https://addisfrontend.vercel.app',
+            'https://addisfrontend-1.vercel.app'
+        ];
+
+        // Allow if origin is in whitelist or is a vercel.app subdomain or is localhost
+        if (!origin || allowedOrigins.includes(origin) ||
+            origin.endsWith('.vercel.app') ||
+            origin.includes('localhost')) {
+            callback(null, true);
+        } else {
+            console.warn('CORS Blocked for:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 app.use(express.json());
