@@ -255,7 +255,7 @@ router.post('/register', async (req, res) => {
             woreda: woreda.trim(),
             tin_number: tin_number.trim(),
             license_number: license_number?.trim() || '',
-            approved: false,
+            approved: true, // Auto-approve individuals
             role: role || 'pharmacist',
             account_type: account_type || 'individual',
             subscription_status: 'inactive',
@@ -718,14 +718,15 @@ router.post('/verify-email', async (req, res) => {
         // Update user to mark email as verified
         // AUTO-APPROVE: If individual/regular user (not company admin), automatically approve on verification
         // Company Admins (role='company_admin') must be manually approved by Super Admin.
-        let autoApprove = false;
+        // AUTO-APPROVE: 
+        // 1. Individual users (pharmacists) are auto-approved on verification.
+        // 2. Company employees (company_users table) are auto-approved.
+        // 3. ONLY Company Admins (role='company_admin') require manual super-admin approval.
+        let autoApprove = true;
 
         if (table === 'users') {
-            // Check if this user is a company admin
             if (user.role === 'company_admin' || user.account_type === 'company') {
                 autoApprove = false;
-            } else {
-                autoApprove = true;
             }
         }
 

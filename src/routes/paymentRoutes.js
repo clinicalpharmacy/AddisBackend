@@ -160,11 +160,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                         subscription_end_date: endDate
                     }).eq('company_id', user.company_id);
                 } else {
-                    // Individual update
+                    // Individual update - AUTO-APPROVE as they have paid
                     await db.from('users').update({
                         subscription_status: 'active',
                         subscription_plan: payment.plan_id,
-                        subscription_end_date: endDate
+                        subscription_end_date: endDate,
+                        approved: true // Individual users are auto-approved on payment
                     }).eq('id', user.id);
                 }
 
@@ -305,11 +306,12 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                     subscription_end_date: endDate
                                 }).eq('company_id', user.company_id);
                             } else {
-                                // Individual update
+                                // Individual update - AUTO-APPROVE as they have paid
                                 await db.from('users').update({
                                     subscription_status: 'active',
                                     subscription_plan: payment.plan_id,
-                                    subscription_end_date: endDate
+                                    subscription_end_date: endDate,
+                                    approved: true // Individual users are auto-approved on payment
                                 }).eq('id', user.id);
                             }
 
