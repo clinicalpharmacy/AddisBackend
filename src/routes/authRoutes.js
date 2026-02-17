@@ -730,8 +730,18 @@ router.post('/verify-email', async (req, res) => {
         }
 
         // Update user to mark email as verified
-        // AUTO-APPROVE: If individual/regular user (not company), automatically approve on verification
-        const autoApprove = table === 'users';
+        // AUTO-APPROVE: If individual/regular user (not company admin), automatically approve on verification
+        // Company Admins (role='company_admin') must be manually approved by Super Admin.
+        let autoApprove = false;
+
+        if (table === 'users') {
+            // Check if this user is a company admin
+            if (user.role === 'company_admin' || user.account_type === 'company') {
+                autoApprove = false;
+            } else {
+                autoApprove = true;
+            }
+        }
 
         const updates = {
             email_verified: true,
