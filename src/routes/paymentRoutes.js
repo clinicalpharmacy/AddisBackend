@@ -66,8 +66,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
         const { tx_ref, status } = req.body;
         if (!tx_ref) return res.status(400).json({ error: 'Missing tx_ref' });
 
-        const { data: payment } = await supabase.from('payments').select('*').eq('tx_ref', tx_ref).single();
-        if (!payment) return res.status(404).json({ error: 'Not found' });
+        const db = supabaseAdmin || supabase;
+        const { data: payment, error: fetchError } = await db.from('payments').select('*').eq('tx_ref', tx_ref).maybeSingle();
+        if (fetchError || !payment) {
+            console.error('❌ Payment record not found in webhook for tx_ref:', tx_ref);
+            return res.status(404).json({ error: 'Not found' });
+        }
 
         const updateData = { updated_at: new Date().toISOString(), gateway_response: req.body };
         if (status === 'success') {
@@ -78,7 +82,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
             updateData.status = 'failed';
         }
 
-        await supabase.from('payments').update(updateData).eq('id', payment.id);
+        const { error: updateError } = await db.from('payments').update(updateData).eq('id', payment.id);
+        if (updateError) {
+            console.error('❌ Failed to update payment status in webhook:', updateError.message);
+        } else {
+            console.log(`✅ Payment status updated to ${updateData.status} for tx_ref: ${tx_ref}`);
+        }
 
         if (status === 'success' && payment.user_email) {
             const cleanEmail = payment.user_email.trim().toLowerCase();
@@ -161,9 +170,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 // Verify
 router.get('/payments/:tx_ref/verify', async (req, res) => {
     try {
-        const { tx_ref } = req.params;
-        const { data: payment } = await supabase.from('payments').select('*').eq('tx_ref', tx_ref).single();
-        if (!payment) return res.status(404).json({ success: false, error: 'Not found', status: 'not_found' });
+        const db = supabaseAdmin || supabase;
+        const { data: payment, error: fetchError } = await db.from('payments').select('*').eq('tx_ref', tx_ref).maybeSingle();
+        if (fetchError || !payment) {
+            console.error('❌ Payment record not found in verify for tx_ref:', tx_ref);
+            return res.status(404).json({ success: false, error: 'Not found', status: 'not_found' });
+        }
 
         if (payment.status === 'paid') {
             return res.json({ success: true, payment, is_paid: true, status: 'paid' });
@@ -184,7 +196,12 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                         gateway_response: check.data,
                         updated_at: new Date().toISOString()
                     };
-                    await supabase.from('payments').update(updates).eq('id', payment.id);
+                    const { error: updateError } = await db.from('payments').update(updates).eq('id', payment.id);
+                    if (updateError) {
+                        console.error('❌ Failed to update payment status in verify:', updateError.message);
+                    } else {
+                        console.log(`✅ Payment status updated to paid in verify for tx_ref: ${tx_ref}`);
+                    }
 
                     // Update User(s) Subscription Access
                     if (payment.user_email) {
