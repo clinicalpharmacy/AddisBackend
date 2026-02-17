@@ -32,8 +32,15 @@ app.use(cors({
             'http://localhost:5173',
             'http://localhost:3000',
             'https://addisfrontend.vercel.app',
-            'https://addisfrontend-1.vercel.app'
+            'https://addisfrontend-1.vercel.app',
+            'https://addis-med.com',
+            'https://www.addis-med.com'
         ];
+
+        // Add configured frontend URL if it exists
+        if (config.frontendUrl && !allowedOrigins.includes(config.frontendUrl)) {
+            allowedOrigins.push(config.frontendUrl);
+        }
 
         // Allow if origin is in whitelist or is a vercel.app subdomain or is localhost
         if (!origin || allowedOrigins.includes(origin) ||
