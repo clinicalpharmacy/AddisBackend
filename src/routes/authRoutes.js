@@ -76,10 +76,27 @@ router.post('/login', async (req, res) => {
             const isVerified = user.email_verified;
             const isApproved = user.approved;
 
-            // 1. Check if BOTH are missing
-            // RELAXED: Allow login for unverified/unapproved users
-            // Frontend will handle locking sidebar links based on these flags
-            // and the subscription_status.
+            // 1. Company Admins: REQUIRE BOTH email verification and super-admin approval
+            if (user.role === 'company_admin' || user.account_type === 'company') {
+                if (!isVerified || !isApproved) {
+                    return res.status(401).json({
+                        success: false,
+                        error: !isVerified ? 'Please verify your email address.' : 'Your account is pending administrator approval.',
+                        email_verification_required: !isVerified,
+                        approval_required: !isApproved
+                    });
+                }
+            }
+
+            // 2. Individuals/Company Staff: REQUIRE email verification 
+            // (Approval is skipped because they are auto-approved as handled in signup/verification routes)
+            if (!isVerified) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Please verify your email address to log in.',
+                    email_verification_required: true
+                });
+            }
         }
 
         if (user.is_blocked) {
