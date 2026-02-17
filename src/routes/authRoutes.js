@@ -71,23 +71,40 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, error: errorMsg });
         }
 
-        // Check email verification - Skip for admin, superadmin, or already approved users
-        if (user.email_verified === false && user.role !== 'admin' && user.role !== 'superadmin' && !user.approved) {
-            return res.status(401).json({
-                success: false,
-                error: 'Please verify your email address before logging in. Check your inbox for the verification link.',
-                email_verification_required: true,
-                email: user.email
-            });
-        }
+        // Check verification and approval - Skip for admin, superadmin
+        if (user.role !== 'admin' && user.role !== 'superadmin') {
+            const isVerified = user.email_verified;
+            const isApproved = user.approved;
 
-        // Check approval - Skip for admin and superadmin
-        if (user.role !== 'admin' && user.role !== 'superadmin' && !user.approved) {
-            return res.status(401).json({
-                success: false,
-                error: 'Your account is pending approval. Please wait for approval before logging in.',
-                approval_required: true
-            });
+            // 1. Check if BOTH are missing
+            if (!isVerified && !isApproved) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Please verify your email address AND wait for admin approval.',
+                    email_verification_required: true,
+                    approval_required: true,
+                    email: user.email
+                });
+            }
+
+            // 2. Check if ONLY Verification is missing
+            if (!isVerified) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Please verify your email address before logging in.',
+                    email_verification_required: true,
+                    email: user.email
+                });
+            }
+
+            // 3. Check if ONLY Approval is missing
+            if (!isApproved) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Your account is pending admin approval. Please wait for approval.',
+                    approval_required: true
+                });
+            }
         }
 
         if (user.is_blocked) {
@@ -713,12 +730,21 @@ router.post('/verify-email', async (req, res) => {
         }
 
         // Update user to mark email as verified
-        await db.from(table).update({
+        // AUTO-APPROVE: If individual/regular user (not company), automatically approve on verification
+        const autoApprove = table === 'users';
+
+        const updates = {
             email_verified: true,
             email_verification_token: null,
             email_verification_expires: null,
             updated_at: new Date().toISOString()
-        }).eq('id', user.id);
+        };
+
+        if (autoApprove) {
+            updates.approved = true;
+        }
+
+        await db.from(table).update(updates).eq('id', user.id);
 
         // Send welcome email (don't wait for it to complete)
         sendWelcomeEmail(user.email, user.full_name).catch(err => {
@@ -727,8 +753,11 @@ router.post('/verify-email', async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Email verified successfully! Your account is now pending admin approval. You will be notified once approved.',
-            email_verified: true
+            message: autoApprove
+                ? 'Email verified successfully! You can now log in.'
+                : 'Email verified successfully! Your company account is pending admin approval.',
+            email_verified: true,
+            auto_approved: autoApprove
         });
     } catch (e) {
         console.error('Email verification error:', e);

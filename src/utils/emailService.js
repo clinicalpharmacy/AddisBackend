@@ -9,7 +9,7 @@ const createTransporter = () => {
         secure: false, // true for 465, false for other ports
         auth: {
             user: config.emailUser,
-            pass: config.emailPassword
+            pass: (config.emailPassword || '').replace(/\s+/g, '')
         }
     });
 };
@@ -24,9 +24,9 @@ const createTransporter = () => {
 export const sendVerificationEmail = async (email, name, verificationToken) => {
     try {
         const transporter = createTransporter();
-        
+
         const verificationUrl = `${config.frontendUrl}/verify-email?token=${verificationToken}`;
-        
+
         const mailOptions = {
             from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,
@@ -120,6 +120,9 @@ export const sendVerificationEmail = async (email, name, verificationToken) => {
 
         const info = await transporter.sendMail(mailOptions);
         console.log('✅ Verification email sent:', info.messageId);
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('🔗 Verification Link:', verificationUrl);
+        }
         return true;
     } catch (error) {
         console.error('❌ Error sending verification email:', error);
@@ -137,9 +140,9 @@ export const sendVerificationEmail = async (email, name, verificationToken) => {
 export const sendPasswordResetEmail = async (email, name, resetToken) => {
     try {
         const transporter = createTransporter();
-        
+
         const resetUrl = `${config.frontendUrl}/reset-password?token=${resetToken}`;
-        
+
         const mailOptions = {
             from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,
@@ -247,7 +250,7 @@ export const sendPasswordResetEmail = async (email, name, resetToken) => {
 export const sendWelcomeEmail = async (email, name) => {
     try {
         const transporter = createTransporter();
-        
+
         const mailOptions = {
             from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,

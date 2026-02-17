@@ -7,7 +7,21 @@ const router = express.Router();
 // ARN Assessments
 router.post('/assessments/drn', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, patient_code, category, severity, interventions, monitoring_plan, notes } = req.body;
+        const {
+            patient_id,
+            patient_code,
+            category,
+            cause_name,
+            rule_type,
+            dtp_type,
+            specific_case,
+            medical_condition,
+            medication,
+            drn,
+            status,
+            severity
+        } = req.body;
+
         const userId = req.user.userId;
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
@@ -18,16 +32,29 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         }
 
         const assessmentData = {
-            patient_id, patient_code, user_id: userId,
-            category, severity, interventions, monitoring_plan, notes,
-            created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+            patient_id,
+            patient_code,
+            user_id: userId,
+            category,
+            cause_name,
+            rule_type,
+            dtp_type,
+            specific_case,
+            medical_condition,
+            medication,
+            drn,
+            status: status || 'active',
+            severity: severity || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
         };
 
         const { data, error } = await supabase.from('drn_assessments').insert([assessmentData]).select().single();
         if (error) throw error;
         res.json({ success: true, message: 'Saved', assessment: data });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Server error' });
+        console.error('Error saving assessment:', e);
+        res.status(500).json({ success: false, error: e.message || 'Server error', details: e });
     }
 });
 
@@ -75,12 +102,21 @@ router.put('/assessments/drn/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;
+        delete updates.patient_id;
+        delete updates.patient_code;
 
-        const { data, error } = await (supabaseAdmin || supabase).from('drn_assessments').update(updates).eq('id', id).select().single();
+        const { data, error } = await (supabaseAdmin || supabase)
+            .from('drn_assessments')
+            .update(updates)
+            .eq('id', id)
+            .select()
+            .single();
+
         if (error) throw error;
         res.json({ success: true, assessment: data });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('Error updating assessment:', e);
+        res.status(500).json({ success: false, error: 'Failed to update assessment' });
     }
 });
 
