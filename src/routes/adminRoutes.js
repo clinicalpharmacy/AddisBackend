@@ -14,6 +14,7 @@ router.get('/pending-approvals', authenticateToken, requireAdmin, async (req, re
             .from('users')
             .select('id, email, full_name, institution, country, region, phone, account_type, role, approved, created_at, subscription_status, license_number')
             .eq('approved', false)
+            .eq('role', 'company_admin') // ONLY Company Admins need manual approval
             .order('created_at', { ascending: true });
 
         if (error) throw error;
@@ -201,7 +202,7 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
         const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others, blocked] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
-            supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false).eq('role', 'company_admin'),
             supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
             supabase.from('payments').select('amount').eq('status', 'paid'),
             supabase.from('medications').select('*', { count: 'exact', head: true }),
