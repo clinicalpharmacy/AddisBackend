@@ -74,7 +74,9 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
         }
 
         const updateData = { updated_at: new Date().toISOString(), gateway_response: req.body };
-        if (status === 'success') {
+        const normalizedStatus = status?.toLowerCase();
+
+        if (normalizedStatus === 'success') {
             updateData.status = 'paid';
             updateData.paid_at = new Date().toISOString();
             updateData.transaction_id = req.body.transaction_id;
@@ -89,9 +91,8 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
             console.log(`✅ Payment status updated to ${updateData.status} for tx_ref: ${tx_ref}`);
         }
 
-        if (status === 'success' && payment.user_email) {
+        if (status?.toLowerCase() === 'success' && payment.user_email) {
             const cleanEmail = payment.user_email.trim().toLowerCase();
-            const db = supabaseAdmin || supabase;
             const { data: user, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
 
             if (userError) {
@@ -104,7 +105,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 
                 if (isCompanyType && user.company_id) {
                     // Update principal company record
-                    await supabase.from('companies').update({
+                    await db.from('companies').update({
                         subscription_status: 'active',
                         subscription_plan: payment.plan_id,
                         subscription_end_date: endDate,
@@ -170,6 +171,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 // Verify
 router.get('/payments/:tx_ref/verify', async (req, res) => {
     try {
+        const { tx_ref } = req.params;
         const db = supabaseAdmin || supabase;
         const { data: payment, error: fetchError } = await db.from('payments').select('*').eq('tx_ref', tx_ref).maybeSingle();
         if (fetchError || !payment) {
@@ -186,7 +188,10 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                 const check = await axios.get(`${CHAPA_BASE_URL}/transaction/verify/${tx_ref}`, {
                     headers: { 'Authorization': `Bearer ${CHAPA_SECRET_KEY}` }
                 });
-                if (check.data.status === 'success' && check.data.data?.status === 'success') {
+                const normalizedStatus = check.data.status?.toLowerCase();
+                const normalizedGatewayStatus = check.data.data?.status?.toLowerCase();
+
+                if (normalizedStatus === 'success' && normalizedGatewayStatus === 'success') {
                     // Update DB for payment
                     const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
                     const updates = {
@@ -206,7 +211,6 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                     // Update User(s) Subscription Access
                     if (payment.user_email) {
                         const cleanEmail = payment.user_email.trim().toLowerCase();
-                        const db = supabaseAdmin || supabase;
                         const { data: user, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
 
                         if (userError) {
