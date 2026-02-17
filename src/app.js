@@ -20,6 +20,7 @@ import performanceRoutes from './routes/performanceRoutes.js';
 import medicationReconciliationRoutes from './routes/medicationReconciliationRoutes.js';
 import linkRoutes from './routes/linkRoutes.js';
 import availabilityRoutes from './routes/availabilityRoutes.js';
+import feedbackRoutes from './routes/feedbackRoutes.js';
 
 const app = express();
 
@@ -75,6 +76,7 @@ app.use('/api', paymentRoutes);
 app.use('/api', utilityRoutes);
 app.use('/api', linkRoutes);
 app.use('/api', availabilityRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // 404 Handler
 app.use((req, res) => {
