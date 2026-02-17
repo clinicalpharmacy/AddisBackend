@@ -110,26 +110,33 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 
             if (user) {
                 console.log(`👤 Webhook: Processing user ${user.email} (ID: ${user.id})`);
-                const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
-                const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
 
-                // Ensure user has a verification token if they aren't verified yet
+                // 1. ENSURE TOKEN EXISTS
                 let currentToken = user.email_verification_token;
                 if (!user.email_verified && !currentToken) {
                     console.log(`🔑 Webhook: Generating missing verification token for ${user.email}`);
                     const newToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
                     const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-                    const userTable = user.role === 'pharmacist' ? 'users' : 'users'; // Default to users table for now
-                    // Actually determine table based on where we found them
                     const targetTable = (await db.from('users').select('id').eq('id', user.id).maybeSingle()).data ? 'users' : 'company_users';
-
-                    await db.from(targetTable).update({
-                        email_verification_token: newToken,
-                        email_verification_expires: expires
-                    }).eq('id', user.id);
+                    await db.from(targetTable).update({ email_verification_token: newToken, email_verification_expires: expires }).eq('id', user.id);
                     currentToken = newToken;
                 }
+
+                // 2. SEND EMAIL IMMEDIATELY (BLOCKING)
+                if (!user.email_verified && currentToken) {
+                    try {
+                        console.log(`📧 Webhook: Sending verification email to: ${user.email} NOW...`);
+                        const sent = await sendVerificationEmail(user.email, user.full_name, currentToken);
+                        if (sent) console.log(`✅ Webhook: Email delivered to SMTP for ${user.email}`);
+                        else console.error(`❌ Webhook: SMTP failed for ${user.email}`);
+                    } catch (err) {
+                        console.error('❌ Webhook: Email exception:', err.message);
+                    }
+                }
+
+                // 3. BACKGROUND UPDATES (Subscriptions etc)
+                const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
+                const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
 
                 if (isCompanyType && user.company_id) {
                     // Update principal company record
@@ -176,18 +183,8 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     created_at: new Date().toISOString()
                 }]);
 
-                // Send Verification Email if not verified
-                if (!user.email_verified && currentToken) {
-                    console.log(`📧 Webhook: Sending verification email to: ${user.email}`);
-                    sendVerificationEmail(user.email, user.full_name, currentToken).then(sent => {
-                        if (sent) console.log(`✅ Webhook: Email sent to ${user.email}`);
-                        else console.error(`❌ Webhook: Failed to send email to ${user.email}`);
-                    }).catch(err => {
-                        console.error('❌ Webhook: Email sending exception:', err);
-                    });
-                } else {
-                    console.log(`ℹ️ Webhook: Email skipped: verified=${user.email_verified}, token=${!!currentToken}`);
-                }
+                // (Email already sent above)
+                console.log(`ℹ️ Webhook: DB Updates complete for ${user.email}`);
             } else {
                 console.warn(`⚠️ Webhook: No user found with email ${cleanEmail}`);
             }
@@ -258,23 +255,32 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
 
                         if (user) {
                             console.log(`👤 Verify: Processing user ${user.email} (ID: ${user.id})`);
-                            const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
 
-                            // Ensure user has a verification token if they aren't verified yet
+                            // 1. ENSURE TOKEN EXISTS
                             let currentToken = user.email_verification_token;
                             if (!user.email_verified && !currentToken) {
                                 console.log(`🔑 Verify: Generating missing verification token for ${user.email}`);
                                 const newToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
                                 const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
                                 const targetTable = (await db.from('users').select('id').eq('id', user.id).maybeSingle()).data ? 'users' : 'company_users';
-
-                                await db.from(targetTable).update({
-                                    email_verification_token: newToken,
-                                    email_verification_expires: expires
-                                }).eq('id', user.id);
+                                await db.from(targetTable).update({ email_verification_token: newToken, email_verification_expires: expires }).eq('id', user.id);
                                 currentToken = newToken;
                             }
+
+                            // 2. SEND EMAIL IMMEDIATELY (BLOCKING)
+                            if (!user.email_verified && currentToken) {
+                                try {
+                                    console.log(`📧 Verify: Sending verification email to: ${user.email} NOW...`);
+                                    const sent = await sendVerificationEmail(user.email, user.full_name, currentToken);
+                                    if (sent) console.log(`✅ Verify: Email delivered to SMTP for ${user.email}`);
+                                    else console.error(`❌ Verify: SMTP failed for ${user.email}`);
+                                } catch (err) {
+                                    console.error('❌ Verify: Email exception:', err.message);
+                                }
+                            }
+
+                            // 3. BACKGROUND UPDATES (Subscriptions etc)
+                            const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
 
                             if (isCompanyType && user.company_id) {
                                 // 0. Update principal company record

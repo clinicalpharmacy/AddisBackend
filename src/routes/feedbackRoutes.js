@@ -27,7 +27,7 @@ router.post('/', async (req, res) => {
         const { data, error } = await db.from('feedbacks').insert([feedbackData]).select();
 
         if (error) {
-            console.error('❌ Database error during feedback submission:', error.message);
+            console.error('❌ Database error during feedback submission:', JSON.stringify(error, null, 2));
             throw error;
         }
 
@@ -37,8 +37,13 @@ router.post('/', async (req, res) => {
             feedback: data[0]
         });
     } catch (error) {
-        console.error('Feedback submission error:', error);
-        res.status(500).json({ success: false, error: 'Failed to submit feedback', details: error.message });
+        console.error('Feedback submission error detail:', JSON.stringify(error, null, 2));
+        res.status(500).json({
+            success: false,
+            error: 'Failed to submit feedback',
+            details: error.message,
+            code: error.code || 'UNKNOWN_ERROR'
+        });
     }
 });
 
