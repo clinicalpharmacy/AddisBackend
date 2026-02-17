@@ -1,6 +1,6 @@
 import express from 'express';
 import axios from 'axios';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 import { getPlanDetails, calculateEndDate } from '../utils/helpers.js';
 import { sendVerificationEmail } from '../utils/emailService.js';
@@ -82,7 +82,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 
         if (status === 'success' && payment.user_email) {
             const cleanEmail = payment.user_email.trim().toLowerCase();
-            const { data: user } = await supabase.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
+            const db = supabaseAdmin || supabase;
+            const { data: user, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
+
+            if (userError) {
+                console.error('❌ User lookup error in webhook:', userError.message);
+            }
 
             if (user) {
                 const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
@@ -98,27 +103,27 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     }).eq('id', user.company_id);
 
                     // Update all users in company (Admin + Employees)
-                    await supabase.from('users').update({
+                    await db.from('users').update({
                         subscription_status: 'active',
                         subscription_plan: payment.plan_id,
                         subscription_end_date: endDate
                     }).eq('company_id', user.company_id);
 
-                    await supabase.from('company_users').update({
+                    await db.from('company_users').update({
                         subscription_status: 'active',
                         subscription_plan: payment.plan_id,
                         subscription_end_date: endDate
                     }).eq('company_id', user.company_id);
                 } else {
                     // Individual update
-                    await supabase.from('users').update({
+                    await db.from('users').update({
                         subscription_status: 'active',
                         subscription_plan: payment.plan_id,
                         subscription_end_date: endDate
                     }).eq('id', user.id);
                 }
 
-                await supabase.from('subscriptions').insert([{
+                await db.from('subscriptions').insert([{
                     user_id: user.id,
                     company_id: user.company_id || null,
                     plan_id: payment.plan_id,
@@ -135,9 +140,15 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 
                 // Send Verification Email if not verified
                 if (!user.email_verified && user.email_verification_token) {
-                    sendVerificationEmail(user.email, user.full_name, user.email_verification_token).catch(err => {
-                        console.error('Failed to send verification email after payment:', err);
+                    console.log(`📧 Webhook: Triggering verification email for: ${user.email}`);
+                    sendVerificationEmail(user.email, user.full_name, user.email_verification_token).then(sent => {
+                        if (sent) console.log(`✅ Webhook: Verification email sent to ${user.email}`);
+                        else console.error(`❌ Webhook: Failed to send verification email to ${user.email}`);
+                    }).catch(err => {
+                        console.error('Failed to send verification email after webhook payment:', err);
                     });
+                } else {
+                    console.log(`ℹ️ Webhook: Skipping verification email: verified=${user.email_verified}, hasToken=${!!user.email_verification_token}`);
                 }
             }
         }
@@ -178,14 +189,19 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                     // Update User(s) Subscription Access
                     if (payment.user_email) {
                         const cleanEmail = payment.user_email.trim().toLowerCase();
-                        const { data: user } = await supabase.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
+                        const db = supabaseAdmin || supabase;
+                        const { data: user, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
+
+                        if (userError) {
+                            console.error('❌ User lookup error in payment verify:', userError.message);
+                        }
 
                         if (user) {
                             const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
 
                             if (isCompanyType && user.company_id) {
                                 // 0. Update principal company record
-                                await supabase.from('companies').update({
+                                await db.from('companies').update({
                                     subscription_status: 'active',
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate,
@@ -193,21 +209,21 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 }).eq('id', user.company_id);
 
                                 // 1. Update Company Admin & any other users in 'users' table with this company_id
-                                await supabase.from('users').update({
+                                await db.from('users').update({
                                     subscription_status: 'active',
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate
                                 }).eq('company_id', user.company_id);
 
                                 // 2. Update all employees in 'company_users' table
-                                await supabase.from('company_users').update({
+                                await db.from('company_users').update({
                                     subscription_status: 'active',
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate
                                 }).eq('company_id', user.company_id);
                             } else {
                                 // Individual update
-                                await supabase.from('users').update({
+                                await db.from('users').update({
                                     subscription_status: 'active',
                                     subscription_plan: payment.plan_id,
                                     subscription_end_date: endDate
@@ -215,7 +231,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                             }
 
                             // Record in subscriptions history
-                            await supabase.from('subscriptions').insert([{
+                            await db.from('subscriptions').insert([{
                                 user_id: user.id,
                                 company_id: user.company_id || null,
                                 plan_id: payment.plan_id,
@@ -232,9 +248,15 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
 
                             // Send Verification Email if not verified
                             if (!user.email_verified && user.email_verification_token) {
-                                sendVerificationEmail(user.email, user.full_name, user.email_verification_token).catch(err => {
+                                console.log(`📧 Triggering verification email for: ${user.email}`);
+                                sendVerificationEmail(user.email, user.full_name, user.email_verification_token).then(sent => {
+                                    if (sent) console.log(`✅ Verification email sent to ${user.email}`);
+                                    else console.error(`❌ Failed to send verification email to ${user.email}`);
+                                }).catch(err => {
                                     console.error('Failed to send verification email after verify:', err);
                                 });
+                            } else {
+                                console.log(`ℹ️ Skipping verification email: verified=${user.email_verified}, hasToken=${!!user.email_verification_token}`);
                             }
                         }
                     }
