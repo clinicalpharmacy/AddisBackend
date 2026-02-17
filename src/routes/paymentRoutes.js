@@ -3,6 +3,7 @@ import axios from 'axios';
 import { supabase } from '../config/supabase.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 import { getPlanDetails, calculateEndDate } from '../utils/helpers.js';
+import { sendVerificationEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 const CHAPA_BASE_URL = 'https://api.chapa.co/v1';
@@ -81,7 +82,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
 
         if (status === 'success' && payment.user_email) {
             const cleanEmail = payment.user_email.trim().toLowerCase();
-            const { data: user } = await supabase.from('users').select('id, company_id, role').ilike('email', cleanEmail).single();
+            const { data: user } = await supabase.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
 
             if (user) {
                 const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
@@ -131,6 +132,13 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     end_date: endDate,
                     created_at: new Date().toISOString()
                 }]);
+
+                // Send Verification Email if not verified
+                if (!user.email_verified && user.email_verification_token) {
+                    sendVerificationEmail(user.email, user.full_name, user.email_verification_token).catch(err => {
+                        console.error('Failed to send verification email after payment:', err);
+                    });
+                }
             }
         }
         res.json({ success: true, message: 'Processed' });
@@ -170,7 +178,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                     // Update User(s) Subscription Access
                     if (payment.user_email) {
                         const cleanEmail = payment.user_email.trim().toLowerCase();
-                        const { data: user } = await supabase.from('users').select('id, company_id, role').ilike('email', cleanEmail).single();
+                        const { data: user } = await supabase.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).single();
 
                         if (user) {
                             const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
@@ -221,6 +229,13 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 end_date: endDate,
                                 created_at: new Date().toISOString()
                             }]);
+
+                            // Send Verification Email if not verified
+                            if (!user.email_verified && user.email_verification_token) {
+                                sendVerificationEmail(user.email, user.full_name, user.email_verification_token).catch(err => {
+                                    console.error('Failed to send verification email after verify:', err);
+                                });
+                            }
                         }
                     }
                     return res.json({
@@ -233,6 +248,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                 }
             } catch (e) {
                 // validation failed
+                console.error("Verification logic error:", e.message);
             }
         }
 

@@ -77,34 +77,9 @@ router.post('/login', async (req, res) => {
             const isApproved = user.approved;
 
             // 1. Check if BOTH are missing
-            if (!isVerified && !isApproved) {
-                return res.status(401).json({
-                    success: false,
-                    error: 'Please verify your email address AND wait for admin approval.',
-                    email_verification_required: true,
-                    approval_required: true,
-                    email: user.email
-                });
-            }
-
-            // 2. Check if ONLY Verification is missing
-            if (!isVerified) {
-                return res.status(401).json({
-                    success: false,
-                    error: 'Please verify your email address before logging in.',
-                    email_verification_required: true,
-                    email: user.email
-                });
-            }
-
-            // 3. Check if ONLY Approval is missing
-            if (!isApproved) {
-                return res.status(401).json({
-                    success: false,
-                    error: 'Your account is pending admin approval. Please wait for approval.',
-                    approval_required: true
-                });
-            }
+            // RELAXED: Allow login for unverified/unapproved users
+            // Frontend will handle locking sidebar links based on these flags
+            // and the subscription_status.
         }
 
         if (user.is_blocked) {
@@ -215,7 +190,8 @@ router.post('/login', async (req, res) => {
             country: user.country,
             region: user.region,
             tin_number: user.tin_number || '',
-            license_number: user.license_number || ''
+            license_number: user.license_number || '',
+            email_verified: user.email_verified
         };
 
         res.json({
@@ -253,7 +229,7 @@ router.post('/verify-token', async (req, res) => {
 // Register Individual
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, full_name, phone = '', country = 'Ethiopia', region = '', woreda = '', tin_number = '', license_number = '', role = 'pharmacist', account_type = 'individual' } = req.body;
+        const { email, password, full_name, phone = '', country = 'Ethiopia', region = '', woreda = '', tin_number = '', license_number = '', role = 'pharmacist', account_type = 'individual', skip_verification_email = false } = req.body;
 
         if (!email || !password || !full_name || !phone) return res.status(400).json({ success: false, error: 'Required fields missing' });
         const trimmedEmail = email.trim().toLowerCase();
@@ -293,18 +269,23 @@ router.post('/register', async (req, res) => {
         const { data: user, error: insertError } = await supabase.from('users').insert([userData]).select().single();
         if (insertError) throw insertError;
 
-        // Send verification email (don't wait for it to complete)
-        sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken).catch(err => {
-            console.error('Failed to send verification email:', err);
-        });
+        if (!skip_verification_email) {
+            // Send verification email (don't wait for it to complete)
+            sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken).catch(err => {
+                console.error('Failed to send verification email:', err);
+            });
+        }
 
         res.status(201).json({
             success: true,
-            message: 'Registration successful! Please check your email to verify your account.',
+            message: skip_verification_email
+                ? 'Registration successful! Please complete your payment to verify your account.'
+                : 'Registration successful! Please check your email to verify your account.',
             user: { id: user.id, email: user.email },
             id: user.id,
             userId: user.id,
-            email_verification_required: true
+            email_verification_required: !skip_verification_email,
+            email_verification_skipped: !!skip_verification_email
         });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Registration failed', details: error.message });
@@ -314,7 +295,7 @@ router.post('/register', async (req, res) => {
 // Register Company
 router.post('/register-company', async (req, res) => {
     try {
-        const { company_name, company_email, company_address, company_size = '1-10', company_type = 'pharmacy', tin_number, country = 'Ethiopia', region, user_capacity = 5, admin_email, admin_password, admin_full_name, admin_phone, admin_license_number = '' } = req.body;
+        const { company_name, company_email, company_address, company_size = '1-10', company_type = 'pharmacy', tin_number, country = 'Ethiopia', region, user_capacity = 5, admin_email, admin_password, admin_full_name, admin_phone, admin_license_number = '', skip_verification_email = false } = req.body;
 
         if (!company_name || !company_email || !admin_email || !admin_password || !admin_full_name || !admin_phone) {
             return res.status(400).json({ success: false, error: 'Required fields missing' });
@@ -416,16 +397,21 @@ router.post('/register-company', async (req, res) => {
             // console.error('Company update admin_id error:', updateError);
         }
 
-        // Send verification email to admin (don't wait for it to complete)
-        sendVerificationEmail(trimmedAdminEmail, admin_full_name.trim(), verificationToken).catch(err => {
-            console.error('Failed to send verification email:', err);
-        });
+        if (!skip_verification_email) {
+            // Send verification email to admin (don't wait for it to complete)
+            sendVerificationEmail(trimmedAdminEmail, admin_full_name.trim(), verificationToken).catch(err => {
+                console.error('Failed to send verification email:', err);
+            });
+        }
 
         res.status(201).json({
             success: true,
-            message: 'Company registration successful! Please check your email to verify your account.',
+            message: skip_verification_email
+                ? 'Company registration successful! Please complete payment to verify your account.'
+                : 'Company registration successful! Please check your email to verify your account.',
             user: { id: adminUser.id },
-            email_verification_required: true
+            email_verification_required: !skip_verification_email,
+            email_verification_skipped: !!skip_verification_email
         });
     } catch (error) {
         // Provide user-friendly error messages
@@ -814,6 +800,24 @@ router.post('/resend-verification', async (req, res) => {
             return res.json({
                 success: true,
                 message: 'If an account exists with this email, a verification link has been sent.'
+            });
+        }
+
+        // ENFORCE: Verification only after payment
+        let hasPaid = user.subscription_status === 'active';
+
+        // If it's a company user, they don't pay individually, but their company must have a subscription
+        if (!hasPaid && table === 'company_users' && user.company_id) {
+            const { data: comp } = await db.from('companies').select('subscription_status').eq('id', user.company_id).maybeSingle();
+            if (comp?.subscription_status === 'active') {
+                hasPaid = true;
+            }
+        }
+
+        if (!hasPaid) {
+            return res.status(403).json({
+                success: false,
+                error: 'Verification email can only be sent after a successful subscription payment. Please complete your payment first.'
             });
         }
 
