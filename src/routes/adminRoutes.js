@@ -251,13 +251,13 @@ router.get('/companies', authenticateToken, requireAdmin, async (req, res) => {
     try {
         let { data, error } = await supabase
             .from('companies')
-            .select('*, users!admin_id(full_name, email)')
+            .select('*, users!admin_id(full_name, email, phone)')
             .order('created_at', { ascending: false });
 
         if (error) {
             const fallback = await supabase
                 .from('companies')
-                .select('*, users(full_name, email)')
+                .select('*, users(full_name, email, phone)')
                 .order('created_at', { ascending: false });
 
             if (fallback.error) {
