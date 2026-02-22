@@ -30,7 +30,7 @@ router.post('/useful-links', authenticateToken, requireAdmin, async (req, res) =
 
         const newLink = {
             title,
-            url: url || null,
+            url,
             description,
             icon: icon || 'FaExternalLinkAlt',
             category: category || 'General',
