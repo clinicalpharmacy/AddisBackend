@@ -25,7 +25,7 @@ router.post('/useful-links', authenticateToken, requireAdmin, async (req, res) =
         const { title, url, icon, category, description } = req.body;
 
         if (!title || !url) {
-            return res.status(400).json({ success: false, error: 'Title and URL are required' });
+            return res.status(400).json({ success: false, error: 'Title is required' });
         }
 
         const newLink = {
