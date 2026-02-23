@@ -177,8 +177,6 @@ router.post('/', authenticateToken, async (req, res) => {
                 const db = supabaseAdmin || supabase;
                 const { data: exists } = await db.from('users').select('id').eq('id', userId).maybeSingle();
                 if (!exists) {
-
-
                     // Fetch source record to get password_hash and other required fields
                     const { data: sourceUser } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
 
@@ -195,8 +193,6 @@ router.post('/', authenticateToken, async (req, res) => {
 
                         if (syncErr) {
                             console.error('❌ [FIX] Sync failed:', syncErr.message);
-                        } else {
-
                         }
                     } else {
                         console.warn('⚠️ [FIX] Source user not found in company_users, cannot sync.');
@@ -205,10 +201,6 @@ router.post('/', authenticateToken, async (req, res) => {
             } catch (err) { console.warn('Sync exception:', err.message); }
         }
         // -------------------------------------------------------------------------------
-
-        // Note: We no longer force patient ownership to the company admin here.
-        // The data isolation logic in authMiddleware now handles shared access 
-        // by returning all user IDs in the company.
 
         const patientToCreate = {
             ...patientData,
@@ -236,9 +228,7 @@ router.post('/', authenticateToken, async (req, res) => {
         const { data, error } = await targetDb.from('patients').insert([patientToCreate]).select().single();
 
         if (error) {
-            if (error.code === '23503') { // Foreign key retry
-                // If it's still failing, we might need to check if user_id even exists in users table
-            }
+            if (error.code === '23503') { }
             throw error;
         }
 
@@ -268,7 +258,6 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });
 
-        // Permission check: Admin or anyone with accessible ID (all company members)
         const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
         const hasPermission = userRole === 'admin' || (accessibleIds && accessibleIds.includes(existing.user_id));
 
@@ -309,7 +298,6 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });
 
-        // Permission check
         const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
         const hasPermission = userRole === 'admin' || (accessibleIds && accessibleIds.includes(existing.user_id));
 
@@ -327,28 +315,24 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
     }
 });
 
+// ================= DELETE ROUTES =====================
+
 // Delete by ID
 router.delete('/:id', authenticateToken, async (req, res) => {
     try {
         const patientId = req.params.id;
         const userId = req.user.userId;
         const userRole = req.user.role;
+        const userAccountType = req.user.account_type;
 
         const { data: patient } = await supabase.from('patients').select('user_id').eq('id', patientId).single();
         if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
 
-        const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
-        const isAdmin = userRole === 'admin';
-        const isIndividual = req.user.account_type === 'individual';
-
-        // Security: Individual users are not allowed to delete patients
-        if (isIndividual && !isAdmin) {
-            return res.status(403).json({ success: false, error: 'Individual subscription users cannot delete patient records. They can only update existing ones.' });
+        // Only individual users can delete their own patients
+        const canDelete = userAccountType === 'individual' && patient.user_id === userId;
+        if (!canDelete) {
+            return res.status(403).json({ success: false, error: 'Only individual users can delete their own patient records' });
         }
-
-        const hasPermission = isAdmin || (accessibleIds && accessibleIds.includes(patient.user_id));
-
-        if (!hasPermission) return res.status(403).json({ success: false, error: 'Permission denied' });
 
         await supabase.from('patients').delete().eq('id', patientId);
         res.json({ success: true, message: 'Deleted' });
@@ -362,7 +346,7 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
     try {
         const patientCode = req.params.patientCode;
         const userId = req.user.userId;
-        const userRole = req.user.role;
+        const userAccountType = req.user.account_type;
 
         const { data: patient } = await supabase
             .from('patients')
@@ -372,18 +356,10 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
 
         if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
 
-        const accessibleIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
-        const isAdmin = userRole === 'admin';
-        const isIndividual = req.user.account_type === 'individual';
-
-        // Security: Individual users are not allowed to delete patients
-        if (isIndividual && !isAdmin) {
-            return res.status(403).json({ success: false, error: 'Individual subscription users cannot delete patient records. They can only update existing ones.' });
+        const canDelete = userAccountType === 'individual' && patient.user_id === userId;
+        if (!canDelete) {
+            return res.status(403).json({ success: false, error: 'Only individual users can delete their own patient records' });
         }
-
-        const hasPermission = isAdmin || (accessibleIds && accessibleIds.includes(patient.user_id));
-
-        if (!hasPermission) return res.status(403).json({ success: false, error: 'Permission denied' });
 
         const db = supabaseAdmin || supabase;
         await db.from('patients').delete().eq('id', patient.id);
