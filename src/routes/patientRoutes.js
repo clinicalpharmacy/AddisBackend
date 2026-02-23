@@ -142,8 +142,14 @@ router.post('/', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type || 'individual';
         const patientData = req.body;
 
-        if (!patientData.full_name) {
-            return res.status(400).json({ success: false, error: 'Patient name is required' });
+        // Check if user is individual (not company and not admin)
+        const isIndividual = userAccountType === 'individual' && !req.user.company_id;
+        
+        // Only require full_name for non-individual users
+        if (!isIndividual) {
+            if (!patientData.full_name) {
+                return res.status(400).json({ success: false, error: 'Patient name is required' });
+            }
         }
 
         // ✅ INDIVIDUAL SUBSCRIPTION LIMIT: Only 1 patient allowed (Exempt company users)
@@ -201,6 +207,13 @@ router.post('/', authenticateToken, async (req, res) => {
             } catch (err) { console.warn('Sync exception:', err.message); }
         }
         // -------------------------------------------------------------------------------
+
+        // For individual users with no name, generate a default name
+        if (isIndividual && (!patientData.full_name || patientData.full_name.trim() === '')) {
+            // Generate a default name based on patient code or timestamp
+            const defaultName = `Patient ${patientData.patient_code || new Date().getTime()}`;
+            patientData.full_name = defaultName;
+        }
 
         const patientToCreate = {
             ...patientData,
