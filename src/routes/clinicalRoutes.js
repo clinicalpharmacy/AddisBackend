@@ -452,10 +452,17 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
 // Patient Medications CRUD
 router.post('/medication-history', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.userId;
+        const { drug_name, start_date, dose, frequency, roa } = req.body;
+
+        if (!drug_name || !start_date || !dose || !frequency || !roa) {
+            return res.status(400).json({
+                success: false,
+                error: 'Required fields missing: drug_name, start_date, dose, frequency, and roa are mandatory'
+            });
+        }
+
         const medicationData = {
             ...req.body,
-            // Temporarily removed user column to find correct name
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -470,6 +477,15 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
 router.put('/medications/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
+        const { dose, frequency, roa } = req.body;
+
+        if (dose === '' || frequency === '' || roa === '') {
+            return res.status(400).json({
+                success: false,
+                error: 'Dose, frequency, and roa cannot be empty'
+            });
+        }
+
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;

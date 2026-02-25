@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "../Addisfrontend-1"
+		},
+		{
+			"name": "AddisBackend-1",
+			"path": "."
+		},
+		{
+			"path": "../Addisfrontend-old"
+		}
+	],
+	"settings": {}
+}

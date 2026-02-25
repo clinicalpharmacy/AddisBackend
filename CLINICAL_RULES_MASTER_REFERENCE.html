@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinical Rules Master Reference - CDSS</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #64748b;
+            --accent: #f59e0b;
+            --danger: #ef4444;
+            --success: #10b981;
+            --bg: #f8fafc;
+            --text: #1e293b;
+            --card-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background-color: var(--bg);
+            margin: 0;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        h1 {
+            color: var(--primary);
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 10px;
+            text-align: center;
+            font-size: 2.5rem;
+        }
+
+        h2 {
+            color: var(--primary);
+            margin-top: 40px;
+            border-left: 5px solid var(--primary);
+            padding-left: 15px;
+            background: #f1f5f9;
+            padding-top: 10px;
+            padding-bottom: 10px;
+        }
+
+        h3 {
+            color: var(--secondary);
+            margin-top: 30px;
+            font-size: 1.25rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        th {
+            background-color: #f1f5f9;
+            color: var(--primary);
+        }
+
+        .code-block {
+            background: #1e293b;
+            color: #f8fafc;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Fira Code', 'Courier New', Courier, monospace;
+            overflow-x: auto;
+            margin: 15px 0;
+            position: relative;
+        }
+
+        .logic-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            margin-right: 5px;
+        }
+
+        .tag-all { background: #dcfce7; color: #166534; }
+        .tag-any { background: #fef9c3; color: #854d0e; }
+        .tag-not { background: #fee2e2; color: #991b1b; }
+
+        .example-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            background: #fff;
+        }
+
+        .example-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+
+        .btn-print {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--primary);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: bold;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            cursor: pointer;
+            border: none;
+        }
+
+        @media print {
+            .btn-print { display: none; }
+            body { padding: 0; background: white; }
+            .container { box-shadow: none; border: none; max-width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+<button class="btn-print" onclick="window.print()">Download as PDF / Print</button>
+
+<div class="container">
+    <h1>🩺 Clinical Rules Master Reference</h1>
+    <p style="text-align: center; color: var(--secondary);">Comprehensive Guide for CDSS Rule Configuration</p>
+
+    <!-- Section 1 -->
+    <h2>1. Logic Blocks</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Logical meaning</th>
+                <th>Clinical Use Case</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><span class="logic-tag tag-all">all</span></td>
+                <td>AND (Everything must match)</td>
+                <td>Checking for a specific drug + specific lab level.</td>
+            </tr>
+            <tr>
+                <td><span class="logic-tag tag-any">any</span></td>
+                <td>OR (At least one must match)</td>
+                <td>Checking if a patient is on any drug from a list of NSAIDs.</td>
+            </tr>
+            <tr>
+                <td><span class="logic-tag tag-not">not</span></td>
+                <td>NOT (Must not match)</td>
+                <td>Checking if a patient is NOT pregnant or NOT on a drug.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Section 2 -->
+    <h2>2. Logic Operators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Description</th>
+                <th>Example Use Case</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr><td><code>==</code></td><td>Equal To</td><td><code>age == 18</code></td></tr>
+            <tr><td><code>!=</code></td><td>Not Equal To</td><td><code>gender != "Male"</code></td></tr>
+            <tr><td><code>></code></td><td>Greater Than</td><td><code>labs.potassium > 5.5</code></td></tr>
+            <tr><td><code><</code></td><td>Less Than</td><td><code>labs.egfr < 60</code></td></tr>
+            <tr><td><code>>=</code></td><td>Greater or Equal</td><td><code>pregnancy_weeks >= 28</code></td></tr>
+            <tr><td><code><=</code></td><td>Less or Equal</td><td><code>age_in_days <= 28</code></td></tr>
+            <tr><td><code>contains</code></td><td>Checks if Drug is in list</td><td><code>medications contains "warfarin"</code></td></tr>
+        </tbody>
+    </table>
+
+    <!-- Section 3 -->
+    <h2>3. Patient Data Facts (Attributes)</h2>
+    
+    <h3>👶 Demographics & Reproduction</h3>
+    <ul>
+        <li><strong>age</strong>: Age in years.</li>
+        <li><strong>age_in_days</strong>: Precise age for infants/neonates.</li>
+        <li><strong>is_pregnant</strong>: Boolean (true/false).</li>
+        <li><strong>pregnancy_weeks</strong>: Gestational progress (1-42).</li>
+        <li><strong>is_lactating</strong>: Breastfeeding status.</li>
+    </ul>
+
+    <h3>🌡️ Vitals</h3>
+    <ul>
+        <li><strong>vitals.systolic / diastolic</strong>: Blood pressure.</li>
+        <li><strong>vitals.heart_rate</strong>: Heart rate (BPM).</li>
+        <li><strong>vitals.temperature</strong>: Body temp (&deg;C).</li>
+        <li><strong>vitals.oxygen_saturation</strong>: SpO2 level (%).</li>
+    </ul>
+
+    <h3>🧪 Common Lab Results (prefix with <code>labs.</code>)</h3>
+    <ul>
+        <li><strong>creatinine / egfr / bun</strong>: Renal function metrics.</li>
+        <li><strong>potassium / sodium</strong>: Electrolyte levels.</li>
+        <li><strong>hemoglobin / platelet_count</strong>: Hematology levels.</li>
+        <li><strong>alt / ast</strong>: Liver function enzymes.</li>
+        <li><strong>blood_sugar / hba1c</strong>: Glucose control.</li>
+        <li><strong>inr</strong>: Clotting/Warfarin monitoring.</li>
+    </ul>
+
+    <!-- Section 4 -->
+    <h2>4. Advanced Rule Examples</h2>
+
+    <div class="example-card">
+        <div class="example-header">🏥 Ex 1: Pregnancy Contraindication (Critical)</div>
+        <p><strong>Logic:</strong> IF Pregnant AND taking Accutane.</p>
+        <div class="code-block">
+{
+  "all": [
+    { "fact": "is_pregnant", "operator": "==", "value": true },
+    { "fact": "medications", "operator": "contains", "value": "isotretinoin" }
+  ]
+}
+        </div>
+    </div>
+
+    <div class="example-card">
+        <div class="example-header">🥛 Ex 2: Lactation Safety Alert</div>
+        <p><strong>Logic:</strong> IF Breastfeeding AND taking Metronidazole.</p>
+        <div class="code-block">
+{
+  "all": [
+    { "fact": "is_lactating", "operator": "==", "value": true },
+    { "fact": "medications", "operator": "contains", "value": "metronidazole" }
+  ]
+}
+        </div>
+    </div>
+
+    <div class="example-card">
+        <div class="example-header">🧪 Ex 5: Renal Dosing (Complex)</div>
+        <p><strong>Logic:</strong> IF eGFR < 30 AND (Gentamicin OR Tobramycin).</p>
+        <div class="code-block">
+{
+  "all": [
+    { "fact": "labs.egfr", "operator": "<", "value": 30 },
+    {
+      "any": [
+        { "fact": "medications", "operator": "contains", "value": "gentamicin" },
+        { "fact": "medications", "operator": "contains", "value": "tobramycin" }
+      ]
+    }
+  ]
+}
+        </div>
+    </div>
+
+    <div class="example-card">
+        <div class="example-header">🚫 Ex 16: Untreated Hypertension (NOT + ANY)</div>
+        <p><strong>Logic:</strong> IF Systolic > 140 AND NOT taking ANY heart meds.</p>
+        <div class="code-block">
+{
+  "all": [
+    { "fact": "vitals.systolic", "operator": ">", "value": 140 },
+    {
+      "not": {
+        "any": [
+          { "fact": "medications", "operator": "contains", "value": "lisinopril" },
+          { "fact": "medications", "operator": "contains", "value": "amlodipine" }
+        ]
+      }
+    }
+  ]
+}
+        </div>
+    </div>
+
+    <div class="example-card">
+        <div class="example-header">🧪 Ex 18: Missing Monitoring Check (NOT)</div>
+        <p><strong>Logic:</strong> IF taking Warfarin but NO INR lab result on file.</p>
+        <div class="code-block">
+{
+  "all": [
+    { "fact": "medications", "operator": "contains", "value": "warfarin" },
+    {
+      "not": {
+        "fact": "labs.inr",
+        "operator": "exists",
+        "value": true
+      }
+    }
+  ]
+}
+        </div>
+    </div>
+
+    <p style="text-align: center; font-size: 0.8rem; color: var(--secondary); margin-top: 50px;">
+        &copy; 2024 Clinical Decision Support System - Official Documentation
+    </p>
+</div>
+
+</body>
+</html>
