@@ -27,8 +27,13 @@ router.post('/login', async (req, res) => {
         }
         if (!db) return res.status(503).json({ success: false, error: 'Database not configured' });
 
-        const cleanEmail = email.trim().toLowerCase();
+        let cleanEmail = email.trim().toLowerCase();
         const cleanPassword = password.trim();
+
+        // Support Healthcare Client ID login by appending domain if needed
+        if (cleanEmail.startsWith('hcc-') && !cleanEmail.includes('@')) {
+            cleanEmail = `${cleanEmail}@hcc.addis-med.com`;
+        }
         let user = null;
         let userType = null;
         let fetchError = null;
@@ -54,9 +59,18 @@ router.post('/login', async (req, res) => {
         if (fetchError) return res.status(500).json({ success: false, error: 'Database error' });
 
         if (!user) {
-            const errorMsg = process.env.NODE_ENV === 'development'
+            // AUTH DEBUG: Check if user exists with any casing if not found
+            const { data: anyCaseUser } = await db.from('users').select('id, email').ilike('email', cleanEmail).maybeSingle();
+
+            let errorMsg = process.env.NODE_ENV === 'development'
                 ? `Debug: User ${cleanEmail} not found. AdminClient: ${!!supabaseAdmin}`
                 : 'Invalid email or password';
+
+            if (anyCaseUser) {
+                errorMsg += ` (Found similar email: ${anyCaseUser.email})`;
+            }
+
+            console.log(`❌ Auth Fail: ${cleanEmail} not found in DB.`);
             return res.status(401).json({ success: false, error: errorMsg });
         }
 

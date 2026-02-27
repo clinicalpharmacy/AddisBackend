@@ -199,7 +199,7 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!supabase) return res.status(503).json({ error: 'Database not configured' });
 
-        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others, blocked] = await Promise.all([
+        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others, blocked, clients] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false).eq('role', 'company_admin'),
@@ -212,7 +212,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'student'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
             supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer']),
-            supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_blocked', true)
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_blocked', true),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'healthcare_client')
         ]);
 
         const total_revenue = payments.data?.reduce((s, p) => s + (p.amount || 0), 0) || 0;
@@ -238,7 +239,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 pharmacist_count: pharmacists.count || 0,
                 student_count: students.count || 0,
                 laboratory_count: labs.count || 0,
-                others_count: others.count || 0
+                others_count: others.count || 0,
+                healthcare_client_count: clients.count || 0
             }
         });
     } catch (e) {

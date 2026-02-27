@@ -9,6 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS extemporaneous_preparations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     formula_name TEXT,
+    use_indication TEXT,
     materials TEXT,
     preparation_steps TEXT,
     label_instructions TEXT,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS extemporaneous_preparations (
 
 -- Safely add columns
 ALTER TABLE extemporaneous_preparations ADD COLUMN IF NOT EXISTS formula_name TEXT;
+ALTER TABLE extemporaneous_preparations ADD COLUMN IF NOT EXISTS use_indication TEXT;
 ALTER TABLE extemporaneous_preparations ADD COLUMN IF NOT EXISTS materials TEXT;
 ALTER TABLE extemporaneous_preparations ADD COLUMN IF NOT EXISTS preparation_steps TEXT;
 ALTER TABLE extemporaneous_preparations ADD COLUMN IF NOT EXISTS label_instructions TEXT;

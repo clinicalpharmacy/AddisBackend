@@ -409,6 +409,8 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
     }
 });
 
+
+
 // Patient Medications for CDSS / History
 router.get('/medication-history/patient/:patientCode', authenticateToken, async (req, res) => {
     try {
