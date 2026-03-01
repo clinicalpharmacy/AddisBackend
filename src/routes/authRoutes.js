@@ -222,7 +222,9 @@ router.post('/login', async (req, res) => {
             region: user.region,
             tin_number: user.tin_number || '',
             license_number: user.license_number || '',
-            email_verified: user.email_verified
+            email_verified: user.email_verified,
+            is_healthcare_client: isHealthcareClient,
+            healthcare_client_id: isHealthcareClient ? user.id : null
         };
 
         res.json({
@@ -529,6 +531,10 @@ router.get('/me', authenticateToken, async (req, res) => {
         }
 
         const isEffectivelyCompanyUser = user.user_type === 'company_user' || !!user.company_id;
+        const isHealthcareClient = !isEffectivelyCompanyUser && 
+            (user.role === 'healthcare_client' || 
+             user.account_type === 'individual' || 
+             user.user_type === 'individual');
 
         const userResponse = {
             id: user.id,
