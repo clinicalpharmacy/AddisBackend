@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { isValidEmail } from '../utils/helpers.js';
-import { authenticateToken } from '../middleware/authMiddleware.js';
+import { authenticateToken, getPatientLimit, getPatientLimitMessage, checkPatientLimit } from '../middleware/authMiddleware.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/emailService.js';
 
 const router = express.Router();
@@ -203,6 +203,18 @@ router.post('/login', async (req, res) => {
             }
         }
 
+        // Get patient limit info for the user
+        const patientLimit = getPatientLimit(tokenPayload);
+        const patientLimitMessage = getPatientLimitMessage(tokenPayload);
+        
+        // Optionally check current patient count (can be done on frontend via /patients/count endpoint)
+        let patientLimitCheck = null;
+        try {
+            patientLimitCheck = await checkPatientLimit(tokenPayload, db);
+        } catch (limitError) {
+            console.warn('Could not check patient limit during login:', limitError.message);
+        }
+
         const userResponse = {
             id: user.id,
             email: user.email,
@@ -223,6 +235,15 @@ router.post('/login', async (req, res) => {
             tin_number: user.tin_number || '',
             license_number: user.license_number || '',
             email_verified: user.email_verified,
+            // Patient limit info
+            patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
+            patient_limit_message: patientLimitMessage,
+            patient_limit_info: patientLimitCheck ? {
+                canAdd: patientLimitCheck.canAdd,
+                current: patientLimitCheck.current,
+                remaining: patientLimitCheck.remaining,
+                limit: patientLimitCheck.limit
+            } : null
         };
 
         res.json({
@@ -235,6 +256,7 @@ router.post('/login', async (req, res) => {
         });
 
     } catch (error) {
+        console.error('Login error:', error);
         res.status(500).json({ success: false, error: 'Login failed', details: error.message });
     }
 });
@@ -248,11 +270,24 @@ router.post('/verify-token', async (req, res) => {
         const token = authHeader.split(' ')[1];
         try {
             const decoded = jwt.verify(token, JWT_SECRET);
-            res.json({ success: true, valid: true, decoded, message: 'Token is valid' });
+            
+            // Add patient limit info to the response
+            const patientLimit = getPatientLimit(decoded);
+            const patientLimitMessage = getPatientLimitMessage(decoded);
+            
+            res.json({ 
+                success: true, 
+                valid: true, 
+                decoded, 
+                message: 'Token is valid',
+                patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
+                patient_limit_message: patientLimitMessage
+            });
         } catch (jwtError) {
             res.status(401).json({ success: false, valid: false, error: jwtError.message });
         }
     } catch (error) {
+        console.error('Token verification error:', error);
         res.status(500).json({ success: false, error: 'Verification failed' });
     }
 });
@@ -300,6 +335,11 @@ router.post('/register', async (req, res) => {
         const { data: user, error: insertError } = await supabase.from('users').insert([userData]).select().single();
         if (insertError) throw insertError;
 
+        // Get patient limit info for the new user
+        const mockUser = { role, account_type, userId: user.id };
+        const patientLimit = getPatientLimit(mockUser);
+        const patientLimitMessage = getPatientLimitMessage(mockUser);
+
         if (!skip_verification_email) {
             // Send verification email (don't wait for it to complete)
             sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken).catch(err => {
@@ -316,9 +356,12 @@ router.post('/register', async (req, res) => {
             id: user.id,
             userId: user.id,
             email_verification_required: !skip_verification_email,
-            email_verification_skipped: !!skip_verification_email
+            email_verification_skipped: !!skip_verification_email,
+            patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
+            patient_limit_message: patientLimitMessage
         });
     } catch (error) {
+        console.error('Registration error:', error);
         res.status(500).json({ success: false, error: 'Registration failed', details: error.message });
     }
 });
@@ -528,6 +571,25 @@ router.get('/me', authenticateToken, async (req, res) => {
             }
         }
 
+        const isEffectivelyCompanyUser = user.user_type === 'company_user' || !!user.company_id;
+
+        // Get patient limit info for the user
+        const mockUser = {
+            role: user.role,
+            account_type: user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual'),
+            company_id: user.company_id,
+            userId: user.id
+        };
+        const patientLimit = getPatientLimit(mockUser);
+        const patientLimitMessage = getPatientLimitMessage(mockUser);
+        
+        // Optionally check current patient count
+        let patientLimitCheck = null;
+        try {
+            patientLimitCheck = await checkPatientLimit(mockUser, supabase);
+        } catch (limitError) {
+            console.warn('Could not check patient limit in /me:', limitError.message);
+        }
 
         const userResponse = {
             id: user.id,
@@ -546,12 +608,22 @@ router.get('/me', authenticateToken, async (req, res) => {
             subscription_status: hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive'),
             subscription_plan: hasCompanySubscription ? companyData.subscription_plan : (user.subscription_plan || null),
             subscription_end_date: hasCompanySubscription ? companyData.subscription_end_date : user.subscription_end_date,
-            created_at: user.created_at
+            created_at: user.created_at,
+            // Patient limit info
+            patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
+            patient_limit_message: patientLimitMessage,
+            patient_limit_info: patientLimitCheck ? {
+                canAdd: patientLimitCheck.canAdd,
+                current: patientLimitCheck.current,
+                remaining: patientLimitCheck.remaining,
+                limit: patientLimitCheck.limit === Infinity ? 'unlimited' : patientLimitCheck.limit
+            } : null
         };
 
         res.json({ success: true, user: userResponse, user_type: user.user_type });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('/me error:', e);
+        res.status(500).json({ success: false, error: 'Failed to fetch user data' });
     }
 });
 
@@ -567,6 +639,7 @@ router.put('/update-profile', authenticateToken, async (req, res) => {
 
         res.json({ success: true, message: 'Profile updated', user });
     } catch (e) {
+        console.error('Profile update error:', e);
         res.status(500).json({ success: false, error: 'Update failed' });
     }
 });
@@ -587,7 +660,8 @@ router.post('/change-password', authenticateToken, async (req, res) => {
 
         res.json({ success: true, message: 'Password changed' });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('Password change error:', e);
+        res.status(500).json({ success: false, error: 'Failed to change password' });
     }
 });
 
@@ -636,6 +710,7 @@ router.post('/forgot-password', async (req, res) => {
             reset_token: token
         });
     } catch (e) {
+        console.error('Forgot password error:', e);
         res.status(500).json({ success: false, error: 'Failed to process request' });
     }
 });
@@ -689,6 +764,7 @@ router.post('/reset-password', async (req, res) => {
 
         res.json({ success: true, message: 'Password has been reset successfully' });
     } catch (e) {
+        console.error('Reset password error:', e);
         res.status(500).json({ success: false, error: 'Reset failed' });
     }
 });
