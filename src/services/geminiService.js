@@ -5,15 +5,16 @@ dotenv.config();
 
 /**
  * Gemini AI Service for Clinical Decision Support (CDSS).
- * Primary: gemini-2.5-flash-lite (Ultra low-cost)
- * Fallback: gemini-1.5-flash (Stable)
+ * Primary: gemini-2.5-flash (Latest stable/fast)
+ * Fallback 1: gemini-2.5-flash-lite (Ultra low-cost)
+ * Fallback 2: gemini-1.5-flash (Older stable)
  */
 export async function analyzePatientCDSS(patientData, attempts = 0) {
     const key = process.env.GEMINI_API_KEY;
     if (!key) throw new Error("GEMINI_API_KEY is not configured.");
 
     // Define models in order of preference
-    const models = ["gemini-2.5-flash-lite", "gemini-1.5-flash"];
+    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"];
     const model = models[attempts] || models[models.length - 1];
 
     try {
@@ -59,7 +60,11 @@ export async function analyzePatientCDSS(patientData, attempts = 0) {
             throw new Error("Gemini AI returned no candidates.");
         }
 
-        const content = response.data.candidates[0].content.parts[0].text;
+        let content = response.data.candidates[0].content.parts[0].text;
+
+        // Strip markdown backticks if Gemini returns them despite application/json
+        content = content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+
         return JSON.parse(content);
 
     } catch (error) {
