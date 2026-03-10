@@ -21,6 +21,7 @@ import medicationReconciliationRoutes from './routes/medicationReconciliationRou
 import linkRoutes from './routes/linkRoutes.js';
 import availabilityRoutes from './routes/availabilityRoutes.js';
 import feedbackRoutes from './routes/feedbackRoutes.js';
+import geminiRoutes from './routes/geminiRoutes.js';
 
 const app = express();
 
@@ -84,6 +85,7 @@ app.use('/api', utilityRoutes);
 app.use('/api', linkRoutes);
 app.use('/api', availabilityRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/ai', geminiRoutes);
 
 // 404 Handler
 app.use((req, res) => {
