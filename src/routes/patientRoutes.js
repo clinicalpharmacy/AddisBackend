@@ -5,6 +5,66 @@ import { sanitizeSearchQuery } from '../utils/helpers.js';
 
 const router = express.Router();
 
+// Get patient count for current user (with role-based limits)
+router.get('/count', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+        const userAccountType = req.user.account_type || 'individual';
+
+        const { count, error } = await supabase
+            .from('patients')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId);
+
+        if (error) {
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to get patient count'
+            });
+        }
+
+        // Calculate limit based on role for frontend display
+        let limit = 'unlimited';
+        let limitMessage = '';
+        
+        if (userRole === 'admin' || userRole === 'superadmin') {
+            limit = 'unlimited';
+            limitMessage = 'Administrators have unlimited patient access.';
+        } 
+        else if (userAccountType === 'company' || req.user.company_id) {
+            limit = 'unlimited';
+            limitMessage = 'Company users have unlimited patient access.';
+        } 
+        else if (userAccountType === 'individual') {
+            if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
+                limit = 5;
+                limitMessage = 'Pharmacists and pharmacy students can manage up to 5 patients.';
+            } else {
+                limit = 1;
+                limitMessage = 'Individual users are limited to 1 patient. Upgrade to Company subscription for unlimited patients.';
+            }
+        }
+
+        res.json({
+            success: true,
+            count: count || 0,
+            limit: limit,
+            role: userRole,
+            account_type: userAccountType,
+            message: limitMessage,
+            canAddMore: limit === 'unlimited' ? true : (count < limit)
+        });
+
+    } catch (error) {
+        console.error('Error in patient count route:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
+    }
+});
+
 // Get all patients with role-based filtering
 router.get('/', authenticateToken, async (req, res) => {
     try {
@@ -140,6 +200,7 @@ router.post('/', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const userAccountType = req.user.account_type || 'individual';
+        const userRole = req.user.role;
         const patientData = req.body;
 
         // Check if user is individual (not company and not admin)
@@ -152,24 +213,38 @@ router.post('/', authenticateToken, async (req, res) => {
             }
         }
 
-        // ✅ INDIVIDUAL SUBSCRIPTION LIMIT: Only 1 patient allowed (Exempt company users)
+        // ✅ INDIVIDUAL PATIENT LIMIT: Different limits based on role
         if (userAccountType === 'individual' && !req.user.company_id) {
-            const { data: existingPatients, error: countError } = await supabase
+            const { count, error: countError } = await supabase
                 .from('patients')
-                .select('id', { count: 'exact' })
+                .select('*', { count: 'exact', head: true })
                 .eq('user_id', userId);
 
             if (countError) {
                 return res.status(500).json({ success: false, error: 'Failed to verify patient limit' });
             }
 
-            if (existingPatients && existingPatients.length >= 1) {
+            // Determine limit based on role
+            let limit = 1; // Default for individual users
+            let roleType = 'standard individual';
+            let limitMessage = 'Individual subscription allows only 1 patient. Please upgrade to Company subscription for unlimited patients.';
+            
+            if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
+                limit = 5;
+                roleType = 'pharmacist/pharmacy student';
+                limitMessage = 'As a pharmacist or pharmacy student, you can manage up to 5 patients.';
+            }
+
+            if (count >= limit) {
                 return res.status(403).json({
                     success: false,
                     error: 'Patient limit reached',
-                    message: 'Individual subscription allows only 1 patient. Please upgrade to Company subscription for unlimited patients.',
-                    limit: 1,
-                    current: existingPatients.length
+                    message: `You have reached your maximum of ${limit} patient${limit > 1 ? 's' : ''}. ${limitMessage}`,
+                    limit: limit,
+                    current: count,
+                    role: userRole,
+                    account_type: userAccountType,
+                    canAddMore: false
                 });
             }
         }

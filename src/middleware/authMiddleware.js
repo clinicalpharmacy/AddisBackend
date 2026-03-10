@@ -94,6 +94,151 @@ export const checkPatientOwnership = async (req, res, next) => {
     }
 };
 
+// Get patient limit based on user role
+export function getPatientLimit(user) {
+    if (!user) return 1; // Default fallback
+    
+    const userRole = user.role;
+    const userAccountType = user.account_type || 'individual';
+    const hasCompanyId = !!user.company_id;
+    
+    // Admins have no limit
+    if (userRole === 'admin' || userRole === 'superadmin') {
+        return Infinity;
+    }
+    
+    // Company users have no limit
+    if (userAccountType === 'company' || hasCompanyId || 
+        userAccountType === 'company_user' || userRole === 'company_admin') {
+        return Infinity;
+    }
+    
+    // Individual users have limits based on role
+    if (userAccountType === 'individual') {
+        if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
+            return 5; // Pharmacists and pharmacy students: 5 patients
+        } else {
+            return 1; // Other individual users: 1 patient
+        }
+    }
+    
+    // Default fallback
+    return 1;
+}
+
+// Get user-friendly limit message
+export function getPatientLimitMessage(user) {
+    if (!user) return 'Unable to determine patient limit.';
+    
+    const limit = getPatientLimit(user);
+    const userRole = user.role;
+    const userAccountType = user.account_type || 'individual';
+    
+    if (limit === Infinity) {
+        if (userRole === 'admin' || userRole === 'superadmin') {
+            return 'Administrators have unlimited patient access.';
+        }
+        if (userAccountType === 'company' || user.company_id) {
+            return 'Company users have unlimited patient access.';
+        }
+    }
+    
+    if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
+        return `As a ${userRole}, you can manage up to ${limit} patients.`;
+    }
+    
+    if (userAccountType === 'individual') {
+        return `Individual users are limited to ${limit} patient. Upgrade to Company subscription for unlimited patients.`;
+    }
+    
+    return `You are limited to ${limit} patient${limit > 1 ? 's' : ''}.`;
+}
+
+// Check if user can add more patients
+export async function checkPatientLimit(user, supabaseClient = supabase) {
+    try {
+        if (!user || !supabaseClient) {
+            return { canAdd: false, error: 'Invalid user or database connection' };
+        }
+        
+        const limit = getPatientLimit(user);
+        
+        // If limit is Infinity, user can always add more
+        if (limit === Infinity) {
+            return { 
+                canAdd: true, 
+                limit: 'unlimited',
+                current: 0,
+                message: getPatientLimitMessage(user)
+            };
+        }
+        
+        // Get current patient count
+        const { count, error } = await supabaseClient
+            .from('patients')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', user.userId);
+            
+        if (error) {
+            console.error('Error checking patient limit:', error);
+            return { canAdd: false, error: 'Failed to check patient limit' };
+        }
+        
+        const currentCount = count || 0;
+        const canAdd = currentCount < limit;
+        
+        return {
+            canAdd,
+            limit,
+            current: currentCount,
+            remaining: Math.max(0, limit - currentCount),
+            message: getPatientLimitMessage(user)
+        };
+    } catch (error) {
+        console.error('Error in checkPatientLimit:', error);
+        return { canAdd: false, error: 'Server error checking patient limit' };
+    }
+}
+
+// Middleware to check patient limit before creating new patient
+export const requirePatientLimit = async (req, res, next) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authentication required'
+            });
+        }
+        
+        const limitCheck = await checkPatientLimit(req.user, supabase);
+        
+        if (!limitCheck.canAdd) {
+            const limit = getPatientLimit(req.user);
+            
+            return res.status(403).json({
+                success: false,
+                error: 'Patient limit reached',
+                message: limitCheck.error || getPatientLimitMessage(req.user),
+                limit: limit === Infinity ? 'unlimited' : limit,
+                current: limitCheck.current || 0,
+                remaining: limitCheck.remaining || 0,
+                role: req.user.role,
+                account_type: req.user.account_type
+            });
+        }
+        
+        // Attach limit info to request for potential use in route
+        req.patientLimitInfo = limitCheck;
+        next();
+    } catch (error) {
+        console.error('Error in requirePatientLimit middleware:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error checking patient limit'
+        });
+    }
+};
+
 // Data access isolation helper (from server.js)
 export async function getUserAccessibleData(userId, userRole, userCompanyId, userAccountType = 'individual') {
     try {

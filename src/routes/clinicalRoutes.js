@@ -10,16 +10,13 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         const {
             patient_id,
             patient_code,
-            category,
-            cause_name,
-            rule_type,
+            drn_assessment_activity_category,
+            cause,
             dtp_type,
             specific_case,
             medical_condition,
             medication,
             drn,
-            status,
-            severity
         } = req.body;
 
         const userId = req.user.userId;
@@ -35,16 +32,13 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
             patient_id,
             patient_code,
             user_id: userId,
-            category,
-            cause_name,
-            rule_type,
+            drn_assessment_activity_category,
+            cause,
             dtp_type,
             specific_case,
             medical_condition,
             medication,
             drn,
-            status: status || 'active',
-            severity: severity || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
