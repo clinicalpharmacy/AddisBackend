@@ -91,10 +91,25 @@ router.get('/', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
+        // Filter out patient_code and sanitize name for individuals
+        const sanitizedPatients = patients?.map(p => {
+            let processedPatient = { ...p };
+            if (userAccountType === 'individual' && userRole !== 'admin') {
+                const { patient_code, ...rest } = processedPatient;
+                processedPatient = rest;
+                
+                // Also sanitize full_name if it contains Patient PAT...
+                if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
+                    processedPatient.full_name = 'Patient Profile';
+                }
+            }
+            return processedPatient;
+        }) || [];
+
         res.json({
             success: true,
-            patients: patients || [],
-            count: patients?.length || 0,
+            patients: sanitizedPatients,
+            count: sanitizedPatients.length,
             access_info: { role: userRole }
         });
 
@@ -112,7 +127,24 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         const { data: patients, error } = await supabase.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
         if (error) throw error;
 
-        res.json({ success: true, patients: patients || [], count: patients?.length || 0 });
+        // Filter out patient_code and sanitize name for individuals
+        const userAccountType = req.user.account_type;
+        const userRole = req.user.role;
+        const sanitizedPatients = patients?.map(p => {
+            let processedPatient = { ...p };
+            if (userAccountType === 'individual' && userRole !== 'admin') {
+                const { patient_code, ...rest } = processedPatient;
+                processedPatient = rest;
+                
+                // Also sanitize full_name if it contains Patient PAT...
+                if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
+                    processedPatient.full_name = 'Patient Profile';
+                }
+            }
+            return processedPatient;
+        }) || [];
+
+        res.json({ success: true, patients: sanitizedPatients, count: sanitizedPatients.length });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
     }
@@ -139,6 +171,18 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
         if (error) throw error;
         if (!data) return res.status(404).json({ success: false, error: 'Patient not found' });
 
+        // Access check already handled by query.in('user_id', accessibleUserIds)
+        
+        // Final role-based filtering and name sanitization for individuals
+        if (userAccountType === 'individual' && userRole !== 'admin') {
+            const { patient_code, ...rest } = data;
+            const processed = { ...rest };
+            if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
+                processed.full_name = 'Patient Profile';
+            }
+            return res.json({ success: true, patient: processed });
+        }
+
         res.json({ success: true, patient: data });
 
     } catch (error) {
@@ -159,29 +203,43 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
 
         let query = supabase.from('patients').select('*');
 
-        // Determine if identifier is UUID or Code
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identifier);
+        console.log(`🔍 [DEBUG] Fetching patient by identifier: "${identifier}"`);
+        // Determine if identifier is UUID or Code - simplified and more inclusive regex
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+        const isNumeric = /^\d+$/.test(identifier);
+        const isIdSearch = isUUID || isNumeric;
+        console.log(`🔍 [DEBUG] Identifier type: ${isUUID ? 'UUID' : (isNumeric ? 'Numeric ID' : 'Code')}`);
 
-        if (isUUID) {
-            query = query.eq('id', identifier);
-        } else {
-            query = query.eq('patient_code', identifier);
-        }
-
-        // Apply access control
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            query = query.in('user_id', accessibleUserIds);
-        }
-
-        const { data, error } = await query.maybeSingle();
+        const db = supabaseAdmin || supabase;
+        const { data, error } = await db.from('patients').select('*').eq(isIdSearch ? 'id' : 'patient_code', identifier).maybeSingle();
 
         if (error) {
+            console.error('❌ [DATABASE] Fetch error:', error.message);
             throw error;
         }
 
         if (!data) {
-            return res.status(404).json({ success: false, error: 'Patient not found or access denied' });
+            console.warn(`⚠️ [NOT FOUND] Patient "${identifier}" not found in DB`);
+            return res.status(404).json({ success: false, error: 'Patient not found' });
+        }
+
+        // Apply access control manually since we are using admin client
+        if (userRole !== 'admin') {
+            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
+            if (!accessibleUserIds.includes(data.user_id)) {
+                console.warn(`🔒 [BLOCK] Access denied for requester ${userId} to patient ${data.id} (owned by ${data.user_id})`);
+                return res.status(403).json({ success: false, error: 'Access denied' });
+            }
+        }
+
+        // Filter out patient_code and sanitize name for individuals
+        if (userAccountType === 'individual' && userRole !== 'admin') {
+            const { patient_code, ...rest } = data;
+            const processed = { ...rest };
+            if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
+                processed.full_name = 'Patient Profile';
+            }
+            return res.json({ success: true, patient: processed });
         }
 
         res.json({ success: true, patient: data });
@@ -285,8 +343,9 @@ router.post('/', authenticateToken, async (req, res) => {
 
         // For individual users with no name, generate a default name
         if (isIndividual && (!patientData.full_name || patientData.full_name.trim() === '')) {
-            // Generate a default name based on patient code or timestamp
-            const defaultName = `Patient ${patientData.patient_code || new Date().getTime()}`;
+            // Updated: Default to 'Patient Profile' for all non-admin individual roles
+            const isRestrictedIndividual = userAccountType === 'individual' && userRole !== 'admin';
+            const defaultName = isRestrictedIndividual ? 'Patient Profile' : `Patient ${patientData.patient_code || new Date().getTime()}`;
             patientData.full_name = defaultName;
         }
 
@@ -300,6 +359,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
         delete patientToCreate.id;
 
+        // Always generate patient_code to satisfy NOT NULL constraint in database
         if (!patientToCreate.patient_code) {
             const rnd = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
             patientToCreate.patient_code = `PAT${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth() + 1).toString().padStart(2, '0')}${new Date().getDate().toString().padStart(2, '0')}${rnd}`;
@@ -320,6 +380,16 @@ router.post('/', authenticateToken, async (req, res) => {
             throw error;
         }
 
+        // Still hide patient_code in the creation response if individual
+        if (userAccountType === 'individual' && userRole !== 'admin') {
+            const { patient_code, ...rest } = data;
+            const processed = { ...rest };
+            if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
+                processed.full_name = 'Patient Profile';
+            }
+            return res.status(201).json({ success: true, message: 'Created', patient: processed });
+        }
+ 
         res.status(201).json({ success: true, message: 'Created', patient: data });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message || 'Failed' });
@@ -333,16 +403,10 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
 
-        const isUuid = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+        const isIdSearch = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(identifier);
 
-        let query = supabase.from('patients').select('*');
-        if (isUuid) {
-            query = query.eq('id', identifier);
-        } else {
-            query = query.eq('patient_code', identifier);
-        }
-
-        const { data: existing, error: fetchError } = await query.maybeSingle();
+        const db = supabaseAdmin || supabase;
+        const { data: existing, error: fetchError } = await db.from('patients').select('*').eq(isIdSearch ? 'id' : 'patient_code', identifier).maybeSingle();
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });
 
@@ -360,7 +424,6 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
             }
         });
 
-        const db = supabaseAdmin || supabase;
         const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
         if (error) throw error;
 

@@ -10,11 +10,15 @@ const router = express.Router();
 router.get('/:patientCode', authenticateToken, async (req, res) => {
     try {
         const { patientCode } = req.params;
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
 
-        const { data, error } = await supabase
-            .from('medication_reconciliation')
-            .select('*')
-            .eq('patient_code', patientCode)
+        let query = supabase.from('medication_reconciliation').select('*');
+        if (isUUID) {
+            query = query.eq('patient_id', patientCode);
+        } else {
+            query = query.eq('patient_code', patientCode);
+        }
+        const { data, error } = await query
             .order('reconciliation_date', { ascending: false });
 
         if (error) {
@@ -41,11 +45,15 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
 router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
     try {
         const { patientCode } = req.params;
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
 
-        const { data, error } = await supabase
-            .from('medication_reconciliation')
-            .select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type')
-            .eq('patient_code', patientCode);
+        let query = supabase.from('medication_reconciliation').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type');
+        if (isUUID) {
+            query = query.eq('patient_id', patientCode);
+        } else {
+            query = query.eq('patient_code', patientCode);
+        }
+        const { data, error } = await query;
 
         if (error) throw error;
 
@@ -96,11 +104,11 @@ router.post('/', authenticateToken, async (req, res) => {
             updated_at: new Date().toISOString()
         };
 
-        // Validate required fields
-        if (!reconciliationData.patient_code) {
+        // Validate required fields - one of patient_code or patient_id must be provided
+        if (!reconciliationData.patient_code && !reconciliationData.patient_id) {
             return res.status(400).json({
                 success: false,
-                error: 'Patient code is required'
+                error: 'Patient identifier (code or id) is required'
             });
         }
 
