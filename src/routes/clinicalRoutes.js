@@ -496,8 +496,11 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
         const db = supabaseAdmin || supabase;
         let pCode = req.body.patient_code;
         
-        // Resolve patient_code if an ID (UUID) is provided instead
-        if (pCode && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pCode)) {
+        // Resolve patient_code if an ID (UUID or Numeric) is provided instead
+        const isUUID = pCode && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pCode);
+        const isNumeric = pCode && /^\d+$/.test(pCode);
+        
+        if (pCode && (isUUID || isNumeric)) {
             const { data: patient } = await db.from('patients').select('patient_code').eq('id', pCode).maybeSingle();
             if (patient && patient.patient_code) {
                 pCode = patient.patient_code;
@@ -536,8 +539,11 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         delete updates.user_id;
         delete updates.patient_id; // medication_history lacks patient_id column
         
-        // Resolve patient_code if it looks like a UUID
-        if (updates.patient_code && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(updates.patient_code)) {
+        // Resolve patient_code if it looks like an ID
+        const isUUID = updates.patient_code && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.patient_code);
+        const isNumeric = updates.patient_code && /^\d+$/.test(updates.patient_code);
+
+        if (updates.patient_code && (isUUID || isNumeric)) {
             const { data: patient } = await db.from('patients').select('patient_code').eq('id', updates.patient_code).maybeSingle();
             if (patient && patient.patient_code) {
                 updates.patient_code = patient.patient_code;
