@@ -440,20 +440,16 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
         const userAccountType = req.user.account_type;
  
         // 1. Verify access to the patient first
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
-        let patientQuery = supabase.from('patients').select('id, user_id, patient_code');
-        if (isUUID) {
-            patientQuery = patientQuery.eq('id', patientCode);
-        } else {
-            patientQuery = patientQuery.eq('patient_code', patientCode);
-        }
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientCode);
+        const isNumeric = /^\d+$/.test(patientCode);
+        const isIdSearch = isUUID || isNumeric;
 
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (accessibleUserIds && accessibleUserIds.length > 0) {
-                patientQuery = patientQuery.in('user_id', accessibleUserIds);
-            }
-        }
+        // Use admin client to avoid RLS blocking the lookup
+        const db = supabaseAdmin || supabase;
+        let patientQuery = db.from('patients').select('id, user_id, patient_code');
+        patientQuery = isIdSearch
+            ? patientQuery.eq('id', patientCode)
+            : patientQuery.eq('patient_code', patientCode);
 
         const { data: patient, error: patientError } = await patientQuery.maybeSingle();
 
@@ -462,13 +458,18 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
         }
 
-        // 2. Fetch medications for verified patient
-        let query = (supabaseAdmin || supabase).from('medication_history').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
+        // Manual access check
+        if (userRole !== 'admin') {
+            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
+            if (accessibleUserIds && accessibleUserIds.length > 0 && !accessibleUserIds.includes(patient.user_id)) {
+                return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+            }
         }
+
+        // 2. Fetch medications for verified patient using patient's actual ID
+        let query = db.from('medication_history').select('*');
+        // Always query by resolved patient.id for reliability
+        query = query.eq('patient_id', patient.id)
 
         const { data, error } = await query.order('start_date', { ascending: false });
         if (error) throw error;
