@@ -100,12 +100,15 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
             };
 
             const orFilter = getFilter(codeList);
+            const medicationFilter = codeList ? `patient_code.in.(${codeList})` : null;
 
             [medicationsData, assessmentsData, plansData, outcomesData, costsData] = await Promise.all([
-                supabase
-                    .from('medication_history')
-                    .select('patient_id, patient_code, created_at')
-                    .or(orFilter),
+                medicationFilter ? 
+                    supabase
+                        .from('medication_history')
+                        .select('patient_code, created_at')
+                        .or(medicationFilter) : 
+                    Promise.resolve({ data: [] }),
  
                 supabase
                     .from('drn_assessments')
@@ -325,9 +328,10 @@ router.get('/user-performance/:userId', authenticateToken, async (req, res) => {
         };
 
         const orFilter = getFilter(codeList);
+        const medicationFilter = codeList ? `patient_code.in.(${codeList})` : null;
 
         const [medications, assessments, plans, outcomes] = await Promise.all([
-            supabase.from('medication_history').select('*').or(orFilter),
+            medicationFilter ? supabase.from('medication_history').select('*').or(medicationFilter) : Promise.resolve({ data: [] }),
             supabase.from('drn_assessments').select('*').or(orFilter),
             supabase.from('pharmacy_assistance_plans').select('*').or(orFilter),
             supabase.from('patient_outcomes').select('*').or(orFilter)

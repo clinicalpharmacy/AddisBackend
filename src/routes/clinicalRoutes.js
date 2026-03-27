@@ -466,10 +466,10 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             }
         }
 
-        // 2. Fetch medications for verified patient using patient's actual ID
+        // 2. Fetch medications for verified patient using patient's actual patient_code
         let query = db.from('medication_history').select('*');
-        // Always query by resolved patient.id for reliability
-        query = query.eq('patient_id', patient.id)
+        // Always query by resolved patient.patient_code for reliability because medication_history lacks patient_id
+        query = query.eq('patient_code', patient.patient_code);
 
         const { data, error } = await query.order('start_date', { ascending: false });
         if (error) throw error;
@@ -495,7 +495,6 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
 
         const medicationData = {
             ...req.body,
-            patient_id: req.body.patient_id || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -522,6 +521,7 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;
+        delete updates.patient_id; // medication_history lacks patient_id column
 
         const { data, error } = await supabase.from('medication_history').update(updates).eq('id', id).select().single();
         if (error) throw error;
