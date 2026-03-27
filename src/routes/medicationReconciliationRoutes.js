@@ -10,10 +10,12 @@ const router = express.Router();
 router.get('/:patientCode', authenticateToken, async (req, res) => {
     try {
         const { patientCode } = req.params;
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientCode);
+        const isNumeric = /^\d+$/.test(patientCode);
+        const isIdSearch = isUUID || isNumeric;
 
         let query = supabase.from('medication_reconciliation').select('*');
-        if (isUUID) {
+        if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
             query = query.eq('patient_code', patientCode);
@@ -45,10 +47,12 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
 router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
     try {
         const { patientCode } = req.params;
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientCode);
+        const isNumeric = /^\d+$/.test(patientCode);
+        const isIdSearch = isUUID || isNumeric;
 
         let query = supabase.from('medication_reconciliation').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type');
-        if (isUUID) {
+        if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
             query = query.eq('patient_code', patientCode);
