@@ -38,11 +38,11 @@ router.get('/count', authenticateToken, async (req, res) => {
         } 
         else if (userAccountType === 'individual') {
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
-                limit = 5;
-                limitMessage = 'Pharmacists and pharmacy students can manage up to 5 patients.';
+                limit = 5; // Set to 5 as requested
+                limitMessage = 'Pharmacists and pharmacy students can manage up to 5 MRs.';
             } else {
-                limit = 1;
-                limitMessage = 'Individual users are limited to 1 patient. Upgrade to Company subscription for unlimited patients.';
+                limit = 5; // Increased from 1 to 5
+                limitMessage = 'Individual users are limited to 5 MRs. Upgrade to Company subscription for unlimited access.';
             }
         }
 
@@ -281,14 +281,14 @@ router.post('/', authenticateToken, async (req, res) => {
             }
 
             // Determine limit based on role
-            let limit = 1; // Default for individual users
+            let limit = 5; // Set to 5 for standard individuals
             let roleType = 'standard individual';
-            let limitMessage = 'Individual subscription allows only 1 patient. Please upgrade to Company subscription for unlimited patients.';
+            let limitMessage = 'Individual subscription allows up to 5 MRs. Please upgrade to Company subscription for unlimited access.';
             
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
-                limit = 5;
+                limit = 5; // Set to 5 as requested
                 roleType = 'pharmacist/pharmacy student';
-                limitMessage = 'As a pharmacist or pharmacy student, you can manage up to 5 patients.';
+                limitMessage = 'As a pharmacist or pharmacy student, you can manage up to 5 MRs.';
             }
 
             if (count >= limit) {
