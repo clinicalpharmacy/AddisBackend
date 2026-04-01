@@ -9,7 +9,6 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
     try {
         const {
             patient_id,
-            patient_code,
             drn_assessment_activity_category,
             cause,
             dtp_type,
@@ -30,7 +29,6 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
 
         const assessmentData = {
             patient_id,
-            patient_code,
             user_id: userId,
             drn_assessment_activity_category,
             cause,
@@ -67,11 +65,7 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
 
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = supabase.from('drn_assessments').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
@@ -103,7 +97,6 @@ router.put('/assessments/drn/:id', authenticateToken, async (req, res) => {
         delete updates.id;
         delete updates.user_id;
         delete updates.patient_id;
-        delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase)
             .from('drn_assessments')
@@ -149,9 +142,9 @@ router.post('/plans/pharmacy-assistance', authenticateToken, async (req, res) =>
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
-        const { patient_id, patient_code, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
+        const { patient_id, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
         const planData = {
-            patient_id, patient_code, user_id: req.user.userId,
+            patient_id, user_id: req.user.userId,
             plan_type, goals, medications, monitoring, follow_up, notes,
             created_at: new Date().toISOString(), updated_at: new Date().toISOString()
         };
@@ -178,11 +171,7 @@ router.get('/plans/patient/:patientCode', authenticateToken, async (req, res) =>
  
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = supabase.from('pharmacy_assistance_plans').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
@@ -248,11 +237,7 @@ router.get('/outcomes/patient/:patientCode', authenticateToken, async (req, res)
  
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = supabase.from('patient_outcomes').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
@@ -370,11 +355,7 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
  
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = supabase.from('cost_analyses').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
@@ -468,8 +449,7 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
 
         // 2. Fetch medications for verified patient using patient's ID
         let query = db.from('medication_history').select('*');
-        // Prefer patient_id if available (after migration), fallback to patient_code for legacy
-        query = query.or(`patient_id.eq.${patient.id},patient_code.eq."${patient.patient_code}"`);
+        query = query.eq('patient_id', patient.id);
 
         const { data, error } = await query.order('start_date', { ascending: false });
         if (error) throw error;
@@ -510,8 +490,7 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
 
         const medicationData = {
             ...req.body,
-            patient_id: isIdSearch ? pCode : (req.body.patient_id || null),
-            patient_code: !isIdSearch ? pCode : (req.body.patient_code || null),
+            patient_id: req.body.patient_id || pCode,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -642,13 +621,8 @@ router.get('/vitals/patient/:patientCode', authenticateToken, async (req, res) =
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
 
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = (supabaseAdmin || supabase).from('vitals_history').select('*');
-        if (isUUID || /^\d+$/.test(patientCode)) {
-            query = query.or(`patient_id.eq.${patientCode},patient_code.eq."${patientCode}"`);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
@@ -722,13 +696,8 @@ router.get('/labs-history/patient/:patientCode', authenticateToken, async (req, 
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
 
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = (supabaseAdmin || supabase).from('labs_history').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
-        } else {
-            query = query.eq('patient_code', patientCode);
-        }
+        query = query.eq('patient_id', patientCode);
 
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType)

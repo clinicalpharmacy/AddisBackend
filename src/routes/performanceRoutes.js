@@ -99,34 +99,33 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
                 return `patient_id.in.(${idList})`;
             };
 
-            const orFilter = getFilter(codeList);
-            const medicationFilter = (codeList && codeList.length > 0) ? `patient_id.in.(${idList}),patient_code.in.(${codeList})` : `patient_id.in.(${idList})`;
+            const filter = `patient_id.in.(${idList})`;
 
             [medicationsData, assessmentsData, plansData, outcomesData, costsData] = await Promise.all([
                 supabase
                     .from('medication_history')
-                    .select('patient_id, patient_code, created_at')
-                    .or(medicationFilter),
+                    .select('patient_id, created_at')
+                    .filter('patient_id', 'in', `(${idList})`),
  
                 supabase
                     .from('drn_assessments')
-                    .select('patient_id, patient_code, created_at, category')
-                    .or(orFilter),
+                    .select('patient_id, created_at, category')
+                    .filter('patient_id', 'in', `(${idList})`),
  
                 supabase
                     .from('pharmacy_assistance_plans')
-                    .select('patient_id, patient_code, created_at, plan_type')
-                    .or(orFilter),
+                    .select('patient_id, created_at, plan_type')
+                    .filter('patient_id', 'in', `(${idList})`),
  
                 supabase
                     .from('patient_outcomes')
-                    .select('patient_id, patient_code, created_at, outcome_status')
-                    .or(orFilter),
+                    .select('patient_id, created_at, outcome_status')
+                    .filter('patient_id', 'in', `(${idList})`),
  
                 supabase
                     .from('cost_analyses')
-                    .select('patient_id, patient_code, total_costs, cost_savings, created_at')
-                    .or(orFilter)
+                    .select('patient_id, total_costs, cost_savings, created_at')
+                    .filter('patient_id', 'in', `(${idList})`)
             ]);
         }
 
