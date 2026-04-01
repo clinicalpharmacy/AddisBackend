@@ -499,6 +499,7 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
         // Resolve patient_code if an ID (UUID or Numeric) is provided instead
         const isUUID = pCode && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pCode);
         const isNumeric = pCode && /^\d+$/.test(pCode);
+        const isIdSearch = isUUID || isNumeric;
         
         if (pCode && (isUUID || isNumeric)) {
             const { data: patient } = await db.from('patients').select('patient_code').eq('id', pCode).maybeSingle();
@@ -544,6 +545,7 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         // Resolve patient context
         const isUUID = updates.patient_code && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.patient_code);
         const isNumeric = updates.patient_code && /^\d+$/.test(updates.patient_code);
+        const isIdSearch = (updates.patient_code && (isUUID || isNumeric)) || (updates.patient_id);
 
         if (updates.patient_code && (isUUID || isNumeric)) {
             const { data: patient } = await db.from('patients').select('patient_code').eq('id', updates.patient_code).maybeSingle();
