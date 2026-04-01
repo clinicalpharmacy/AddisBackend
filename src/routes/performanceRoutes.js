@@ -95,20 +95,18 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
             
             // Build filter string for OR (patient_id or patient_code)
             const getFilter = (codeList) => {
-                if (codeList) return `patient_id.in.(${idList}),patient_code.in.(${codeList})`;
+                if (codeList && codeList.length > 0) return `patient_id.in.(${idList}),patient_code.in.(${codeList})`;
                 return `patient_id.in.(${idList})`;
             };
 
             const orFilter = getFilter(codeList);
-            const medicationFilter = codeList ? `patient_code.in.(${codeList})` : null;
+            const medicationFilter = (codeList && codeList.length > 0) ? `patient_id.in.(${idList}),patient_code.in.(${codeList})` : `patient_id.in.(${idList})`;
 
             [medicationsData, assessmentsData, plansData, outcomesData, costsData] = await Promise.all([
-                medicationFilter ? 
-                    supabase
-                        .from('medication_history')
-                        .select('patient_code, created_at')
-                        .or(medicationFilter) : 
-                    Promise.resolve({ data: [] }),
+                supabase
+                    .from('medication_history')
+                    .select('patient_id, patient_code, created_at')
+                    .or(medicationFilter),
  
                 supabase
                     .from('drn_assessments')

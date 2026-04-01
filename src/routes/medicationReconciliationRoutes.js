@@ -18,7 +18,7 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
         if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
-            query = query.eq('patient_code', patientCode);
+            return res.status(404).json({ success: false, error: 'Invalid patient ID' });
         }
         const { data, error } = await query
             .order('reconciliation_date', { ascending: false });
@@ -55,7 +55,7 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
-            query = query.eq('patient_code', patientCode);
+            return res.status(404).json({ success: false, error: 'Invalid patient ID' });
         }
         const { data, error } = await query;
 
@@ -108,13 +108,14 @@ router.post('/', authenticateToken, async (req, res) => {
             updated_at: new Date().toISOString()
         };
 
-        // Validate required fields - one of patient_code or patient_id must be provided
-        if (!reconciliationData.patient_code && !reconciliationData.patient_id) {
+        // Validate required fields - patient_id must be provided
+        if (!reconciliationData.patient_id) {
             return res.status(400).json({
                 success: false,
-                error: 'Patient identifier (code or id) is required'
+                error: 'Patient ID is required'
             });
         }
+        delete reconciliationData.patient_code;
 
         if (!reconciliationData.medication_name) {
             return res.status(400).json({

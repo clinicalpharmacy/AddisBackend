@@ -466,10 +466,10 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             }
         }
 
-        // 2. Fetch medications for verified patient using patient's actual patient_code
+        // 2. Fetch medications for verified patient using patient's ID
         let query = db.from('medication_history').select('*');
-        // Always query by resolved patient.patient_code for reliability because medication_history lacks patient_id
-        query = query.eq('patient_code', patient.patient_code);
+        // Prefer patient_id if available (after migration), fallback to patient_code for legacy
+        query = query.or(`patient_id.eq.${patient.id},patient_code.eq."${patient.patient_code}"`);
 
         const { data, error } = await query.order('start_date', { ascending: false });
         if (error) throw error;
@@ -509,7 +509,8 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
 
         const medicationData = {
             ...req.body,
-            patient_code: pCode,
+            patient_id: isIdSearch ? pCode : (req.body.patient_id || null),
+            patient_code: !isIdSearch ? pCode : (req.body.patient_code || null),
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -537,9 +538,10 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;
-        delete updates.patient_id; // medication_history lacks patient_id column
+        // Now that patient_id is added, we allow it to be updated or persisted
+        // delete updates.patient_id; 
         
-        // Resolve patient_code if it looks like an ID
+        // Resolve patient context
         const isUUID = updates.patient_code && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.patient_code);
         const isNumeric = updates.patient_code && /^\d+$/.test(updates.patient_code);
 
@@ -640,8 +642,8 @@ router.get('/vitals/patient/:patientCode', authenticateToken, async (req, res) =
 
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientCode);
         let query = (supabaseAdmin || supabase).from('vitals_history').select('*');
-        if (isUUID) {
-            query = query.eq('patient_id', patientCode);
+        if (isUUID || /^\d+$/.test(patientCode)) {
+            query = query.or(`patient_id.eq.${patientCode},patient_code.eq."${patientCode}"`);
         } else {
             query = query.eq('patient_code', patientCode);
         }

@@ -91,18 +91,10 @@ router.get('/', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
-        // Filter out patient_code and sanitize name for individuals
+        // Sanitize patient responses
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
-            if (userAccountType === 'individual' && userRole !== 'admin') {
-                const { patient_code, ...rest } = processedPatient;
-                processedPatient = rest;
-                
-                // Also sanitize full_name if it contains Patient PAT...
-                if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
-                    processedPatient.full_name = 'Patient Profile';
-                }
-            }
+            delete processedPatient.patient_code;
             return processedPatient;
         }) || [];
 
@@ -215,7 +207,8 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         console.log(`🔍 [DEBUG] Identifier type: ${isUUID ? 'UUID' : (isNumeric ? 'Numeric ID' : 'Code')}`);
 
         const db = supabaseAdmin || supabase;
-        const { data, error } = await db.from('patients').select('*').eq(isIdSearch ? 'id' : 'patient_code', identifier).maybeSingle();
+        if (!isIdSearch) return res.status(404).json({ success: false, error: 'Invalid patient identifier' });
+        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
@@ -240,20 +233,9 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const { data: userData } = await db.from('users').select('encryption_salt').eq('id', data.user_id).maybeSingle();
         const ownerSalt = userData?.encryption_salt || null;
 
-        // Filter out patient_code and sanitize name for individuals
-        if (userAccountType === 'individual' && userRole !== 'admin') {
-            const { patient_code, ...rest } = data;
-            const processed = { ...rest };
-            if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
-                processed.full_name = 'Patient Profile';
-            }
-            return res.json({ 
-                success: true, 
-                patient: processed,
-                owner_salt: ownerSalt 
-            });
-        }
-
+        // Remove legacy patient_code
+        if (data) delete data.patient_code;
+        
         res.json({ 
             success: true, 
             patient: data,
@@ -375,11 +357,9 @@ router.post('/', authenticateToken, async (req, res) => {
 
         delete patientToCreate.id;
 
-        // Always generate patient_code to satisfy NOT NULL constraint in database
-        if (!patientToCreate.patient_code) {
-            const rnd = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-            patientToCreate.patient_code = `PAT${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth() + 1).toString().padStart(2, '0')}${new Date().getDate().toString().padStart(2, '0')}${rnd}`;
-        }
+        // Legacy patient_code generation removed. 
+        // We now rely exclusively on the database primary key (id).
+        delete patientToCreate.patient_code;
 
         // Clean empty values
         Object.keys(patientToCreate).forEach(k => {
@@ -518,38 +498,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// Delete by code (Legacy support)
-router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
-    try {
-        const patientCode = req.params.patientCode;
-        const userId = req.user.userId;
-        const userAccountType = req.user.account_type;
 
-        const db = supabaseAdmin || supabase;
-        const { data: patient } = await db
-            .from('patients')
-            .select('id, user_id')
-            .eq('patient_code', patientCode)
-            .maybeSingle();
-
-        if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
-
-        // Admins can delete any patient; owners/company staff can delete patients they have access to
-        const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
-        const isOwner = patient.user_id === userId;
-        const accessibleUserIds = await getUserAccessibleData(userId, req.user.role, req.user.company_id, req.user.account_type);
-        const hasPermission = isAdmin || isOwner || (accessibleUserIds && accessibleUserIds.includes(patient.user_id));
-
-        if (!hasPermission) {
-            return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
-        }
-
-        await db.from('patients').delete().eq('id', patient.id);
-        res.json({ success: true, message: 'Deleted' });
-    } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
-    }
-});
 
 // Search patients
 router.get('/search/:query', authenticateToken, async (req, res) => {
@@ -562,7 +511,7 @@ router.get('/search/:query', authenticateToken, async (req, res) => {
         if (!query || query.length < 2) return res.status(400).json({ error: 'Query too short' });
 
         let dbQuery = supabase.from('patients').select('*')
-            .or(`full_name.ilike.%${query}%,patient_code.ilike.%${query}%,contact_number.ilike.%${query}%,diagnosis.ilike.%${query}%`)
+            .or(`full_name.ilike.%${query}%,contact_number.ilike.%${query}%,diagnosis.ilike.%${query}%`)
             .order('created_at', { ascending: false }).limit(50);
 
         if (userRole === 'admin') {
