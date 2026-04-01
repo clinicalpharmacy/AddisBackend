@@ -159,17 +159,21 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type || 'individual';
 
-        let query = supabase.from('patients').select('*').eq('patient_code', patientCode);
-
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            query = query.in('user_id', accessibleUserIds);
-        }
+        const db = supabaseAdmin || supabase;
+        let query = db.from('patients').select('*').eq('patient_code', patientCode);
 
         const { data, error } = await query.maybeSingle();
 
         if (error) throw error;
         if (!data) return res.status(404).json({ success: false, error: 'Patient not found' });
+
+        // Access check
+        if (userRole !== 'admin') {
+            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
+            if (!accessibleUserIds.includes(data.user_id)) {
+                return res.status(403).json({ success: false, error: 'Access denied' });
+            }
+        }
 
         // Access check already handled by query.in('user_id', accessibleUserIds)
         
@@ -452,7 +456,8 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
 
-        const { data: existing, error: fetchError } = await supabase
+        const db = supabaseAdmin || supabase;
+        const { data: existing, error: fetchError } = await db
             .from('patients')
             .select('*')
             .eq('patient_code', patientCode)
@@ -469,7 +474,7 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         ['id', 'user_id', 'created_at', 'created_by', 'patient_code'].forEach(k => delete updates[k]);
 
-        const { data, error } = await supabase.from('patients').update(updates).eq('id', existing.id).select().single();
+        const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
         if (error) throw error;
 
         res.json({ success: true, message: 'Updated', patient: data });
@@ -520,13 +525,14 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userAccountType = req.user.account_type;
 
-        const { data: patient } = await supabase
+        const db = supabaseAdmin || supabase;
+        const { data: patient } = await db
             .from('patients')
             .select('id, user_id')
             .eq('patient_code', patientCode)
-            .single();
+            .maybeSingle();
 
-        if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
+        if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
 
         // Admins can delete any patient; owners/company staff can delete patients they have access to
         const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
@@ -538,7 +544,6 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
         }
 
-        const db = supabaseAdmin || supabase;
         await db.from('patients').delete().eq('id', patient.id);
         res.json({ success: true, message: 'Deleted' });
     } catch (e) {
