@@ -80,7 +80,6 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
         if (patientsError) throw patientsError;
 
         const allPatientIds = userPatients?.map(p => p.id) || [];
-        const allPatientCodes = userPatients?.filter(p => p.patient_code).map(p => p.patient_code) || [];
 
         // 2. Now fetch related data only if we have patients
         let medicationsData = { data: [] };
@@ -94,8 +93,7 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
             const codeList = allPatientCodes.length > 0 ? allPatientCodes.join(',') : null;
             
             // Build filter string for OR (patient_id or patient_code)
-            const getFilter = (codeList) => {
-                if (codeList && codeList.length > 0) return `patient_id.in.(${idList}),patient_code.in.(${codeList})`;
+            const getFilter = () => {
                 return `patient_id.in.(${idList})`;
             };
 

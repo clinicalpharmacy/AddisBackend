@@ -484,10 +484,7 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
         const isIdSearch = isUUID || isNumeric;
         
         if (pCode && (isUUID || isNumeric)) {
-            const { data: patient } = await db.from('patients').select('patient_code').eq('id', pCode).maybeSingle();
-            if (patient && patient.patient_code) {
-                pCode = patient.patient_code;
-            }
+            // If it's a UUID/ID, we use it directly as the identifier
         }
 
         const medicationData = {
@@ -736,6 +733,7 @@ router.post('/reconciliations', authenticateToken, async (req, res) => {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
+        delete reconData.patient_code;
         const { data, error } = await (supabaseAdmin || supabase).from('medication_reconciliations').insert([reconData]).select().single();
         if (error) {
             throw error;
