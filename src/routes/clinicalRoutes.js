@@ -214,6 +214,7 @@ router.post('/outcomes', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
         const item = { ...req.body, patient_id: req.body.patient_id || null, user_id: req.user.userId, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        delete item.patient_code;
         const { data, error } = await supabase.from('patient_outcomes').insert([item]).select().single();
         if (error) throw error;
         res.json({ success: true, message: 'Saved', outcome: data });
@@ -260,6 +261,7 @@ router.put('/outcomes/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;
+        delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('patient_outcomes').update(updates).eq('id', id).select().single();
         if (error) throw error;
@@ -302,6 +304,7 @@ router.post('/costs', authenticateToken, async (req, res) => {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
+        delete item.patient_code;
 
         const targetDb = supabaseAdmin || supabase;
         const { data, error } = await targetDb.from('cost_analyses').insert([item]).select();
@@ -323,6 +326,7 @@ router.put('/costs/:id', authenticateToken, async (req, res) => {
     try {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
+        delete updates.patient_code;
 
         const targetDb = supabaseAdmin || supabase;
         const { data, error } = await targetDb.from('cost_analyses').update(updates).eq('id', req.params.id).select();
@@ -494,6 +498,7 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
+        delete medicationData.patient_code;
         const { data, error } = await db.from('medication_history').insert([medicationData]).select().single();
         if (error) throw error;
         res.status(201).json({ success: true, medication: data });
@@ -518,6 +523,7 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id;
+        delete updates.patient_code;
         // Now that patient_id is added, we allow it to be updated or persisted
         // delete updates.patient_id; 
         
@@ -576,6 +582,7 @@ router.post('/vitals', authenticateToken, async (req, res) => {
             created_by: userId,
             created_at: new Date().toISOString()
         };
+        delete vitalsData.patient_code;
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').insert([vitalsData]).select().single();
         if (error) {
             // Fallback for missing table - many systems might not have it yet
@@ -593,6 +600,7 @@ router.put('/vitals/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id; // Prevent user_id from being updated
+        delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').update(updates).eq('id', id).select().single();
         if (error) throw error;
@@ -652,6 +660,7 @@ router.post('/labs-history', authenticateToken, async (req, res) => {
             created_by: userId,
             created_at: new Date().toISOString()
         };
+        delete labsData.patient_code;
         const { data, error } = await (supabaseAdmin || supabase).from('labs_history').insert([labsData]).select().single();
         if (error) {
             return res.status(200).json({ success: true, skipped: true });
@@ -668,6 +677,7 @@ router.put('/labs-history/:id', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
         delete updates.user_id; // Prevent user_id from being updated
+        delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('labs_history').update(updates).eq('id', id).select().single();
         if (error) throw error;
