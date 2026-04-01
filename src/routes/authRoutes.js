@@ -6,9 +6,39 @@ import { config } from '../config/env.js';
 import { isValidEmail } from '../utils/helpers.js';
 import { authenticateToken, getPatientLimit, getPatientLimitMessage, checkPatientLimit } from '../middleware/authMiddleware.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/emailService.js';
+import { EncryptionService } from '../utils/encryptionService.js';
 
 const router = express.Router();
 const JWT_SECRET = config.jwtSecret;
+
+// 👤 Get current user profile
+router.get('/me', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const db = supabaseAdmin || supabase;
+
+        // Check regular users
+        let { data, error } = await db.from('users').select('*').eq('id', userId).maybeSingle();
+
+        if (!data) {
+            const { data: cData, error: cErr } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
+            data = cData;
+            error = cErr;
+        }
+
+        if (error) throw error;
+        if (!data) return res.status(404).json({ success: false, error: 'Profile not found' });
+
+        // Remove sensitive fields
+        delete data.password_hash;
+        delete data.verification_token;
+
+        res.json({ success: true, user: data });
+    } catch (err) {
+        console.error('❌ [Auth/Me] error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch profile' });
+    }
+});
 
 // Helper to generate random token
 const generateToken = () => {
@@ -38,14 +68,14 @@ router.post('/login', async (req, res) => {
         let userType = null;
         let fetchError = null;
 
-        const { data: regularUser, error: regularError } = await db.from('users').select('*').eq('email', cleanEmail).maybeSingle();
+        const { data: regularUser, error: regularError } = await db.from('users').select('*, encryption_salt').eq('email', cleanEmail).maybeSingle();
 
 
         if (regularUser) {
             user = regularUser;
             userType = 'regular_user';
         } else {
-            const { data: companyUser, error: companyError } = await db.from('company_users').select('*').eq('email', cleanEmail).maybeSingle();
+            const { data: companyUser, error: companyError } = await db.from('company_users').select('*, encryption_salt').eq('email', cleanEmail).maybeSingle();
 
             if (companyError) console.error('❌ AUTH DEBUG DB Error:', companyError);
             if (companyUser) {
@@ -246,13 +276,32 @@ router.post('/login', async (req, res) => {
             } : null
         };
 
+        // 🔐 ZERO-KNOWLEDGE: Return the user's encryption salt
+        let encryptionSalt = user.encryption_salt;
+        
+        console.log(`🔍 [Auth] Login attempt for: ${user.email}. Existing salt: ${!!encryptionSalt}`);
+
+        if (!encryptionSalt) {
+            encryptionSalt = EncryptionService.generateSalt();
+            const table = userType === 'company_user' ? 'company_users' : 'users';
+            
+            try {
+                const { error: updateErr } = await db.from(table).update({ encryption_salt: encryptionSalt }).eq('id', user.id);
+                if (updateErr) throw updateErr;
+                console.log(`✅ [Encryption] Generated and SAVED salt for: ${user.email}`);
+            } catch (err) {
+                console.error(`❌ [Encryption] Could not save salt to DB, using memory-only for this session:`, err);
+            }
+        }
+
         res.json({
             success: true,
             message: 'Login successful',
             token: token,
             user: userResponse,
             user_type: userType,
-            token_expires_in: '24 hours'
+            token_expires_in: '24 hours',
+            encryption_salt: encryptionSalt
         });
 
     } catch (error) {
@@ -307,6 +356,9 @@ router.post('/register', async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password.trim(), 10);
 
+        // Generate encryption salt for zero-knowledge patient data protection
+        const encryptionSalt = EncryptionService.generateSalt();
+
         // Generate email verification token
         const verificationToken = generateToken();
         const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
@@ -328,6 +380,7 @@ router.post('/register', async (req, res) => {
             email_verified: false,
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
+            encryption_salt: encryptionSalt,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
@@ -358,7 +411,8 @@ router.post('/register', async (req, res) => {
             email_verification_required: !skip_verification_email,
             email_verification_skipped: !!skip_verification_email,
             patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
-            patient_limit_message: patientLimitMessage
+            patient_limit_message: patientLimitMessage,
+            encryption_salt: encryptionSalt
         });
     } catch (error) {
         console.error('Registration error:', error);
@@ -409,6 +463,10 @@ router.post('/register-company', async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(admin_password.trim(), 10);
+
+        // Generate encryption salt for the company admin
+        const encryptionSalt = EncryptionService.generateSalt();
+
         const companyData = {
             company_name: company_name.trim(),
             email: company_email.trim().toLowerCase(), // Company's general email
@@ -455,6 +513,7 @@ router.post('/register-company', async (req, res) => {
             email_verified: false,
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
+            encryption_salt: encryptionSalt,
             created_at: new Date().toISOString(), updated_at: new Date().toISOString()
         };
 
@@ -485,7 +544,8 @@ router.post('/register-company', async (req, res) => {
                 : 'Company registration successful! Please check your email to verify your account.',
             user: { id: adminUser.id },
             email_verification_required: !skip_verification_email,
-            email_verification_skipped: !!skip_verification_email
+            email_verification_skipped: !!skip_verification_email,
+            encryption_salt: encryptionSalt
         });
     } catch (error) {
         // Provide user-friendly error messages
@@ -967,5 +1027,115 @@ router.post('/resend-verification', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to resend verification email' });
     }
 });
+
+/**
+ * 🔐 UPDATE ENCRYPTION KEYS (Zero-Knowledge PKI)
+ * Saves the user's Public Key and Wrapped Private Key.
+ */
+router.post('/update-encryption-keys', authenticateToken, async (req, res) => {
+    try {
+        const { public_key, private_key_encrypted } = req.body;
+        // Use userId from the token payload (req.user.userId)
+        const userId = req.user && (req.user.userId || req.user.id);
+        const db = supabaseAdmin || supabase;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, error: 'User identity missing from token' });
+        }
+
+        if (!public_key || !private_key_encrypted) {
+            return res.status(400).json({ success: false, error: 'Both keys are required' });
+        }
+
+        console.log(`🔐 [Encryption] Syncing keys for user: ${userId}`);
+
+        let updateSuccess = false;
+        let updateError = null;
+
+        // 1. Try updating in 'users' table
+        const { data: userData, error: userErr } = await db.from('users')
+            .update({ public_key, private_key_encrypted, updated_at: new Date().toISOString() })
+            .eq('id', userId)
+            .select();
+
+        if (userData && userData.length > 0 && !userErr) {
+            updateSuccess = true;
+        } else if (userErr) {
+            updateError = userErr;
+        }
+
+        // 2. If not found in 'users', try 'company_users' table
+        if (!updateSuccess) {
+            const { data: compData, error: compErr } = await db.from('company_users')
+                .update({ public_key, private_key_encrypted, updated_at: new Date().toISOString() })
+                .eq('id', userId)
+                .select();
+
+            if (compData && compData.length > 0 && !compErr) {
+                updateSuccess = true;
+            } else if (compErr) {
+                updateError = compErr;
+            }
+        }
+
+        if (!updateSuccess) {
+            console.error(`❌ [Auth] Update failed for keys. User: ${userId}. Error:`, updateError?.message || 'User not found');
+            return res.status(404).json({ 
+                success: false, 
+                error: updateError ? `Database error: ${updateError.message}` : 'User record not found in verified tables' 
+            });
+        }
+
+        res.json({ success: true, message: 'Security keys synchronized successfully' });
+    } catch (err) {
+        console.error('❌ [Auth] Unexpected error updating encryption keys:', err.message);
+        res.status(500).json({ success: false, error: `Failed to update security keys: ${err.message}` });
+    }
+});
+
+/**
+ * 🔍 SEARCH USER BY EMAIL
+ * Finds a user's public info (including public key) for data sharing.
+ */
+router.get('/search', authenticateToken, async (req, res) => {
+    try {
+        const { email } = req.query;
+        const db = supabaseAdmin || supabase;
+        
+        if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
+
+        const cleanEmail = email.trim().toLowerCase();
+
+        // Check regular users
+        let { data, error } = await db.from('users')
+            .select('*')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+
+        // Check company users if not found
+        if (!data) {
+            const { data: cData, error: cErr } = await db.from('company_users')
+                .select('*')
+                .eq('email', cleanEmail)
+                .maybeSingle();
+            data = cData;
+            error = cErr;
+        }
+
+        if (error) throw error;
+        if (!data) return res.status(404).json({ success: false, error: 'User not found in verified registry' });
+
+        // Enforce admin-only sharing for Support feature
+        if (data.role !== 'admin') {
+            return res.status(403).json({ success: false, error: 'Authorization restricted to Verified Administrators only' });
+        }
+
+        res.json({ success: true, user: data });
+    } catch (err) {
+        console.error('❌ [Auth] Search error:', err.message);
+        res.status(500).json({ success: false, error: `Search encountered an error: ${err.message}` });
+    }
+});
+
 
 export default router;

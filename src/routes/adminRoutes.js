@@ -5,6 +5,25 @@ import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js
 
 const router = express.Router();
 
+/**
+ * 🔒 GET SECURITY USERS (Public to authenticated users)
+ * Returns all admins who have initialized their security keys.
+ */
+router.get('/security-users', authenticateToken, async (req, res) => {
+    try {
+        const { data: users, error } = await supabase
+            .from('users')
+            .select('id, full_name, email, public_key')
+            .eq('role', 'admin')
+            .not('public_key', 'is', null);
+
+        if (error) throw error;
+        res.json({ success: true, users: users || [] });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
 // Get pending approvals
 router.get('/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
     try {
@@ -383,6 +402,29 @@ router.get('/subscriptions', authenticateToken, requireAdmin, async (req, res) =
     } catch (e) {
         console.error('❌ Error fetching subscriptions:', e);
         res.status(500).json({ success: false, error: 'Failed to fetch subscriptions', details: e.message });
+    }
+});
+
+/**
+ * 🔐 GET SECURITY USERS
+ * Fetch administrators with active public keys for data sharing.
+ */
+router.get('/security-users', authenticateToken, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        
+        // Find admins who have already synced their security keys
+        const { data, error } = await db.from('users')
+            .select('id, full_name, email, public_key')
+            .eq('role', 'admin')
+            .not('public_key', 'is', null);
+
+        if (error) throw error;
+
+        res.json({ success: true, users: data || [] });
+    } catch (err) {
+        console.error('❌ [Admin] Error fetching security users:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch support admins' });
     }
 });
 

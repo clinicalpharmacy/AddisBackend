@@ -232,6 +232,10 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             }
         }
 
+        // 🔐 ZERO-KNOWLEDGE: Include the owner's salt so the record can be unlocked (by owner or admin)
+        const { data: userData } = await db.from('users').select('encryption_salt').eq('id', data.user_id).maybeSingle();
+        const ownerSalt = userData?.encryption_salt || null;
+
         // Filter out patient_code and sanitize name for individuals
         if (userAccountType === 'individual' && userRole !== 'admin') {
             const { patient_code, ...rest } = data;
@@ -239,10 +243,18 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
                 processed.full_name = 'Patient Profile';
             }
-            return res.json({ success: true, patient: processed });
+            return res.json({ 
+                success: true, 
+                patient: processed,
+                owner_salt: ownerSalt 
+            });
         }
 
-        res.json({ success: true, patient: data });
+        res.json({ 
+            success: true, 
+            patient: data,
+            owner_salt: ownerSalt 
+        });
 
     } catch (error) {
         res.status(500).json({
@@ -474,21 +486,30 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         const patientId = req.params.id;
         const userId = req.user.userId;
         const userRole = req.user.role;
-        const userAccountType = req.user.account_type;
 
-        const { data: patient } = await supabase.from('patients').select('user_id').eq('id', patientId).single();
-        if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
+        const db = supabaseAdmin || supabase;
+        const { data: patient } = await db.from('patients').select('user_id').eq('id', patientId).single();
+        if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
 
-        // Only individual users can delete their own patients
-        const canDelete = userAccountType === 'individual' && patient.user_id === userId;
-        if (!canDelete) {
-            return res.status(403).json({ success: false, error: 'Only individual users can delete their own patient records' });
+        // Admins can delete any patient; owners/company staff can delete patients they have access to
+        const isAdmin = userRole === 'admin' || userRole === 'superadmin';
+        const isOwner = patient.user_id === userId;
+        
+        // 🛡️ [ALL USERS] Check accessible IDs for company admins/staff
+        const accessibleUserIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
+        const hasPermission = isAdmin || isOwner || (accessibleUserIds && accessibleUserIds.includes(patient.user_id));
+
+        if (!hasPermission) {
+            return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
         }
 
-        await supabase.from('patients').delete().eq('id', patientId);
-        res.json({ success: true, message: 'Deleted' });
+        const { error } = await db.from('patients').delete().eq('id', patientId);
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Patient deleted successfully' });
     } catch (e) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('❌ [Delete Patient] Error:', e.message);
+        res.status(500).json({ success: false, error: e.message || 'Failed to delete patient' });
     }
 });
 
@@ -507,9 +528,14 @@ router.delete('/code/:patientCode', authenticateToken, async (req, res) => {
 
         if (!patient) return res.status(404).json({ success: false, error: 'Not found' });
 
-        const canDelete = userAccountType === 'individual' && patient.user_id === userId;
-        if (!canDelete) {
-            return res.status(403).json({ success: false, error: 'Only individual users can delete their own patient records' });
+        // Admins can delete any patient; owners/company staff can delete patients they have access to
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+        const isOwner = patient.user_id === userId;
+        const accessibleUserIds = await getUserAccessibleData(userId, req.user.role, req.user.company_id, req.user.account_type);
+        const hasPermission = isAdmin || isOwner || (accessibleUserIds && accessibleUserIds.includes(patient.user_id));
+
+        if (!hasPermission) {
+            return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
         }
 
         const db = supabaseAdmin || supabase;

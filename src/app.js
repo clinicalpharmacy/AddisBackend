@@ -22,6 +22,8 @@ import linkRoutes from './routes/linkRoutes.js';
 import availabilityRoutes from './routes/availabilityRoutes.js';
 import feedbackRoutes from './routes/feedbackRoutes.js';
 import geminiRoutes from './routes/geminiRoutes.js';
+import encryptionRoutes from './routes/encryptionRoutes.js';
+import accessRoutes from './routes/accessRoutes.js';
 
 const app = express();
 
@@ -86,6 +88,8 @@ app.use('/api', linkRoutes);
 app.use('/api', availabilityRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', geminiRoutes);
+app.use('/api/encryption', encryptionRoutes);
+app.use('/api/access', accessRoutes);
 
 // 404 Handler
 app.use((req, res) => {
