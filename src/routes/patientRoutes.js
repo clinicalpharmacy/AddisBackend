@@ -199,7 +199,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
 
         const db = supabaseAdmin || supabase;
         if (!isIdSearch) return res.status(404).json({ success: false, error: 'Invalid patient identifier' });
-        const { data, error } = await db.from('patients').select('id, user_id, full_name, age, gender, is_pregnant, is_lactating, weight, height, created_at, updated_at, diagnosis, allergies, vitals, labs, contact_number, address').eq('id', identifier).maybeSingle();
+        const { data, error } = await db.from('patients').select('id, user_id, full_name, age, gender, is_pregnant, is_lactating, weight, height, created_at, updated_at, diagnosis, allergies, contact_number, address').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
