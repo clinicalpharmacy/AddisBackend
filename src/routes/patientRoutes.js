@@ -94,7 +94,6 @@ router.get('/', authenticateToken, async (req, res) => {
         // Sanitize patient responses
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
-            delete processedPatient.patient_code;
             return processedPatient;
         }) || [];
 
@@ -125,9 +124,6 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
             if (userAccountType === 'individual' && userRole !== 'admin') {
-                const { patient_code, ...rest } = processedPatient;
-                processedPatient = rest;
-                
                 // Also sanitize full_name if it contains Patient PAT...
                 if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
                     processedPatient.full_name = 'Patient Profile';
@@ -142,17 +138,12 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
     }
 });
 
-// Legacy Get by code - MUST come before /:identifier
+// Legacy Get by code - Now points to ID search
 router.get('/code/:patientCode', authenticateToken, async (req, res) => {
     try {
         const patientCode = req.params.patientCode;
-        const userId = req.user.userId;
-        const userRole = req.user.role;
-        const userCompanyId = req.user.company_id;
-        const userAccountType = req.user.account_type || 'individual';
-
         const db = supabaseAdmin || supabase;
-        let query = db.from('patients').select('*').eq('patient_code', patientCode);
+        let query = db.from('patients').select('*').eq('id', patientCode);
 
         const { data, error } = await query.maybeSingle();
 
@@ -208,7 +199,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
 
         const db = supabaseAdmin || supabase;
         if (!isIdSearch) return res.status(404).json({ success: false, error: 'Invalid patient identifier' });
-        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
+        const { data, error } = await db.from('patients').select('id, user_id, full_name, age, gender, is_pregnant, is_lactating, weight, height, created_at, updated_at').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
@@ -233,8 +224,10 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const { data: userData } = await db.from('users').select('encryption_salt').eq('id', data.user_id).maybeSingle();
         const ownerSalt = userData?.encryption_salt || null;
 
-        // Remove legacy patient_code
-        if (data) delete data.patient_code;
+        // Legacy removal - already using UUID
+        if (data) {
+            // Already clean due to select
+        }
         
         res.json({ 
             success: true, 
@@ -376,10 +369,9 @@ router.post('/', authenticateToken, async (req, res) => {
             throw error;
         }
 
-        // Still hide patient_code in the creation response if individual
+        // Still hide patient information if individual
         if (userAccountType === 'individual' && userRole !== 'admin') {
-            const { patient_code, ...rest } = data;
-            const processed = { ...rest };
+            const processed = { ...data };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
                 processed.full_name = 'Patient Profile';
             }
@@ -402,7 +394,7 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         const isIdSearch = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(identifier);
 
         const db = supabaseAdmin || supabase;
-        const { data: existing, error: fetchError } = await db.from('patients').select('*').eq(isIdSearch ? 'id' : 'patient_code', identifier).maybeSingle();
+        const { data: existing, error: fetchError } = await db.from('patients').select('id, user_id').eq(isIdSearch ? 'id' : 'id', identifier).maybeSingle();
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });
 

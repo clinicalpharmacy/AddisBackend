@@ -431,10 +431,8 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
 
         // Use admin client to avoid RLS blocking the lookup
         const db = supabaseAdmin || supabase;
-        let patientQuery = db.from('patients').select('id, user_id, patient_code');
-        patientQuery = isIdSearch
-            ? patientQuery.eq('id', patientCode)
-            : patientQuery.eq('patient_code', patientCode);
+        let patientQuery = db.from('patients').select('id, user_id');
+        patientQuery = patientQuery.eq('id', patientCode);
 
         const { data: patient, error: patientError } = await patientQuery.maybeSingle();
 
