@@ -365,8 +365,12 @@ router.post('/', authenticateToken, async (req, res) => {
         const { data, error } = await targetDb.from('patients').insert([patientToCreate]).select().single();
 
         if (error) {
-            if (error.code === '23503') { }
-            throw error;
+            console.error('❌ Database error saving patient:', error);
+            // Return specific DB error message to help debug (e.g., type mismatch)
+            return res.status(500).json({ 
+                success: false, 
+                error: `Database: ${error.message} (Code: ${error.code})` 
+            });
         }
 
         // Still hide patient information if individual
@@ -380,7 +384,8 @@ router.post('/', authenticateToken, async (req, res) => {
  
         res.status(201).json({ success: true, message: 'Created', patient: data });
     } catch (e) {
-        res.status(500).json({ success: false, error: e.message || 'Failed' });
+        console.error('❌ Server exception in create patient:', e);
+        res.status(500).json({ success: false, error: e.message || 'Server error' });
     }
 });
 
@@ -413,11 +418,19 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         });
 
         const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
-        if (error) throw error;
+        
+        if (error) {
+            console.error('❌ Database error updating patient:', error);
+            return res.status(500).json({ 
+                success: false, 
+                error: `Database: ${error.message} (Code: ${error.code})` 
+            });
+        }
 
         res.json({ success: true, message: 'Updated', patient: data });
     } catch (e) {
-        res.status(500).json({ success: false, error: e.message || 'Failed' });
+        console.error('❌ Server exception in update patient:', e);
+        res.status(500).json({ success: false, error: e.message || 'Server error' });
     }
 });
 
@@ -447,11 +460,19 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         ['id', 'user_id', 'created_at', 'created_by', 'patient_code'].forEach(k => delete updates[k]);
 
         const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
-        if (error) throw error;
+        
+        if (error) {
+            console.error('❌ Database error updating patient by code:', error);
+            return res.status(500).json({ 
+                success: false, 
+                error: `Database: ${error.message} (Code: ${error.code})` 
+            });
+        }
 
         res.json({ success: true, message: 'Updated', patient: data });
     } catch (e) {
-        res.status(500).json({ success: false, error: e.message || 'Failed' });
+        console.error('❌ Server exception in update patient by code:', e);
+        res.status(500).json({ success: false, error: e.message || 'Server error' });
     }
 });
 
