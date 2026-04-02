@@ -1,5 +1,5 @@
 import express from 'express';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -211,7 +211,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
 
-        const { error } = await supabase
+        const { error } = await (supabaseAdmin || supabase)
             .from('medication_reconciliations')
             .delete()
             .eq('id', id);
