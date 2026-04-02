@@ -501,6 +501,31 @@ router.delete('/:id', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
         }
 
+        // 🗑️ [CASCADE] Delete all related records first to avoid foreign key constraint errors
+        const relatedTables = [
+            'medication_reconciliations',
+            'medication_reconciliation', // Handle both singular and plural just in case
+            'drn_assessments',
+            'medication_history',
+            'plans',
+            'costs',
+            'outcomes',
+            'pharmacotherapy_monitoring',
+            'vaccination_status',
+            'social_history',
+            'patient_physical_assessment',
+            'lab_results',
+            'vital_signs',
+            'patient_access'
+        ];
+
+        console.log(`🗑️ [Delete Patient] Cleaning up related data for patient ${patientId}...`);
+        
+        // Execute all deletions in parallel for efficiency
+        await Promise.all(relatedTables.map(table => 
+            db.from(table).delete().eq('patient_id', patientId)
+        ));
+
         const { error } = await db.from('patients').delete().eq('id', patientId);
         if (error) throw error;
 
