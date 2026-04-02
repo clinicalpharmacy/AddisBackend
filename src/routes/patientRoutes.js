@@ -122,10 +122,12 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         // Filter out patient_code and sanitize name for individuals
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
+        // Sanitize patient responses ONLY if they are not the owner
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
-            if (userAccountType === 'individual' && userRole !== 'admin') {
-                // Also sanitize full_name if it contains Patient PAT...
+            
+            // Only redact if user is individual AND not the owner/admin
+            if (userAccountType === 'individual' && userRole !== 'admin' && p.user_id !== userId) {
                 if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
                     processedPatient.full_name = 'Patient Profile';
                 }
@@ -161,8 +163,8 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
 
         // Access check already handled by query.in('user_id', accessibleUserIds)
         
-        // Final role-based filtering and name sanitization for individuals
-        if (userAccountType === 'individual' && userRole !== 'admin') {
+        // Role-based filtering and name sanitization for individuals (if NOT the owner)
+        if (userAccountType === 'individual' && userRole !== 'admin' && data.user_id !== userId) {
             const { patient_code, ...rest } = data;
             const processed = { ...rest };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
@@ -200,7 +202,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
 
         const db = supabaseAdmin || supabase;
         if (!isIdSearch) return res.status(404).json({ success: false, error: 'Invalid patient identifier' });
-        const { data, error } = await db.from('patients').select('id, user_id, full_name, age, gender, is_pregnant, is_lactating, weight, height, created_at, updated_at, diagnosis, allergies, contact_number, address').eq('id', identifier).maybeSingle();
+        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
@@ -375,7 +377,8 @@ router.post('/', authenticateToken, async (req, res) => {
         }
 
         // Still hide patient information if individual
-        if (userAccountType === 'individual' && userRole !== 'admin') {
+        // Still hide patient information if individual (if NOT the owner)
+        if (userAccountType === 'individual' && userRole !== 'admin' && data.user_id !== userId) {
             const processed = { ...data };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
                 processed.full_name = 'Patient Profile';
