@@ -200,9 +200,13 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     try {
         const admin_id = req.user.userId || req.user.id;
 
-        // Simple select without joins to troubleshoot sync errors
+        // Fetch approvals with minimal joins to ensure DB_SYNC reliability
         const { data, error } = await db.from('access_requests')
-            .select('*')
+            .select(`
+                *,
+                patient:patient_id(id, full_name, patient_code),
+                owner:owner_id(full_name, email)
+            `)
             .eq('requester_id', admin_id)
             .eq('status', 'approved');
 

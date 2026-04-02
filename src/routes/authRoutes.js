@@ -273,7 +273,10 @@ router.post('/login', async (req, res) => {
                 current: patientLimitCheck.current,
                 remaining: patientLimitCheck.remaining,
                 limit: patientLimitCheck.limit
-            } : null
+            } : null,
+            // 🛡️ PKI: Security Keys for Zero-Knowledge Restoration
+            public_key: user.public_key,
+            private_key_encrypted: user.private_key_encrypted
         };
 
         // 🔐 ZERO-KNOWLEDGE: Return the user's encryption salt
