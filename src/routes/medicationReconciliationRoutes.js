@@ -14,7 +14,7 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(patientCode);
         const isIdSearch = isUUID || isNumeric;
 
-        let query = supabase.from('medication_reconciliation').select('*');
+        let query = supabase.from('medication_reconciliations').select('*');
         if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
@@ -51,7 +51,7 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(patientCode);
         const isIdSearch = isUUID || isNumeric;
 
-        let query = supabase.from('medication_reconciliation').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type');
+        let query = supabase.from('medication_reconciliations').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type');
         if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
@@ -132,7 +132,7 @@ router.post('/', authenticateToken, async (req, res) => {
         }
 
         const { data, error } = await supabase
-            .from('medication_reconciliation')
+            .from('medication_reconciliations')
             .insert([reconciliationData])
             .select()
             .single();
@@ -173,7 +173,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
         delete updateData.patient_code; // Don't allow changing patient
 
         const { data, error } = await supabase
-            .from('medication_reconciliation')
+            .from('medication_reconciliations')
             .update(updateData)
             .eq('id', id)
             .select()
@@ -212,7 +212,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
 
         const { error } = await supabase
-            .from('medication_reconciliation')
+            .from('medication_reconciliations')
             .delete()
             .eq('id', id);
 
@@ -241,7 +241,7 @@ router.get('/detail/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
 
         const { data, error } = await supabase
-            .from('medication_reconciliation')
+            .from('medication_reconciliations')
             .select('*')
             .eq('id', id)
             .single();
