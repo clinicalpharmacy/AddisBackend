@@ -105,7 +105,8 @@ router.get('/', authenticateToken, async (req, res) => {
         });
 
     } catch (error) {
-        res.status(500).json({ success: false, error: 'Failed' });
+        console.error('❌ [DATABASE] Failed to fetch patient list:', error.message);
+        res.status(500).json({ success: false, error: error.message || 'Failed to load patients' });
     }
 });
 
