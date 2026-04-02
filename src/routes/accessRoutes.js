@@ -200,15 +200,11 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     try {
         const admin_id = req.user.userId || req.user.id;
 
+        // Simple select without joins to troubleshoot sync errors
         const { data, error } = await db.from('access_requests')
-            .select(`
-                *,
-                patient:patient_id(full_name, patient_code, created_at),
-                owner:owner_id(full_name, email)
-            `)
+            .select('*')
             .eq('requester_id', admin_id)
-            .eq('status', 'approved')
-            .order('approved_at', { ascending: false });
+            .eq('status', 'approved');
 
         if (error) throw error;
 
