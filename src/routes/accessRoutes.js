@@ -203,7 +203,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
         const { data, error } = await db.from('access_requests')
             .select(`
                 *,
-                patient:patient_id(id, full_name, patient_code, created_at),
+                patient:patient_id(full_name, patient_code, created_at),
                 owner:owner_id(full_name, email)
             `)
             .eq('requester_id', admin_id)
