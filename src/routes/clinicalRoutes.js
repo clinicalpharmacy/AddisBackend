@@ -775,4 +775,38 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
     }
 });
 
+router.delete('/reconciliations/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+
+        // Check ownership if not admin
+        const { data: existing, error: fetchError } = await (supabaseAdmin || supabase)
+            .from('medication_reconciliations')
+            .select('created_by')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !existing) {
+            return res.status(404).json({ success: false, error: 'Reconciliation not found' });
+        }
+
+        if (userRole !== 'admin' && existing.created_by !== userId) {
+            return res.status(403).json({ success: false, error: 'Unauthorized to delete this record' });
+        }
+
+        const { error } = await (supabaseAdmin || supabase)
+            .from('medication_reconciliations')
+            .delete()
+            .eq('id', id);
+
+        if (error) throw error;
+        res.json({ success: true, message: 'Deleted successfully' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message || 'Failed' });
+    }
+});
+
 export default router;
+
