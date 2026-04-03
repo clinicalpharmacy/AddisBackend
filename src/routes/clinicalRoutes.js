@@ -518,7 +518,7 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
             updated_at: new Date().toISOString()
         };
         delete medicationData.patient_code;
-        const { data, error } = await db.from('medication_history').insert([medicationData]).select().single();
+        const { data, error } = await supabase.from('medication_history').insert([medicationData]).select().single();
         if (error) throw error;
         res.status(201).json({ success: true, medication: data });
     } catch (e) {

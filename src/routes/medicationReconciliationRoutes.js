@@ -59,7 +59,11 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         if (isIdSearch) {
             query = query.eq('patient_id', patientCode);
         } else {
-            return res.status(404).json({ success: false, error: 'Invalid patient ID' });
+            // Resolve code to numeric ID
+            const db = supabaseAdmin || supabase;
+            const { data: patient } = await db.from('patients').select('id').eq('patient_code', patientCode).maybeSingle();
+            if (!patient) return res.json({ success: true, stats: { total: 0 } });
+            query = query.eq('patient_id', patient.id);
         }
         const { data, error } = await query;
 
