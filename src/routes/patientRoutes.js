@@ -134,7 +134,12 @@ router.get('/', authenticateToken, async (req, res) => {
             success: true, 
             patients: sanitizedPatients,
             count: sanitizedPatients.length,
-            access_info: { role: userRole, combined: true }
+            access_info: { 
+                role: userRole, 
+                combined: true,
+                debug_userId: userId,
+                active_ids: activeUserIds
+            }
         });
     } catch (error) {
         console.error('❌ [DATABASE] Failed to fetch patient list:', error.message);
@@ -251,14 +256,20 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         let query = supabase.from('patients').select('*');
 
         console.log(`🔍 [DEBUG] Fetching patient by identifier: "${identifier}"`);
-        // Determine if identifier is UUID or Code - simplified and more inclusive regex
+        // Determine if identifier is UUID, Numeric, or HCC-style string
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
         const isNumeric = /^\d+$/.test(identifier);
-        const isIdSearch = isUUID || isNumeric;
-        console.log(`🔍 [DEBUG] Identifier type: ${isUUID ? 'UUID' : (isNumeric ? 'Numeric ID' : 'Code')}`);
+        const isHCC = /^HCC-/i.test(identifier);
+        const isIdSearch = isUUID || isNumeric || isHCC;
+
+        console.log(`🔍 [DEBUG] Identifier type: ${isUUID ? 'UUID' : (isNumeric ? 'Numeric ID' : (isHCC ? 'HCC ID' : 'Code'))}`);
 
         const db = supabaseAdmin || supabase;
-        if (!isIdSearch) return res.status(404).json({ success: false, error: 'Invalid patient identifier' });
+        if (!isIdSearch && !identifier.startsWith('PAT')) {
+             return res.status(400).json({ success: false, error: 'Invalid patient identifier format' });
+        }
+        
+        // Search by primary ID (UUID, Numeric, or HCC string)
         const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
 
         if (error) {
