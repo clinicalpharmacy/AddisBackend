@@ -83,12 +83,36 @@ router.get('/', authenticateToken, async (req, res) => {
             // Admin sees all
         } else if (userAccountType === 'company_user' || userRole === 'company_admin') {
             query = query.in('user_id', accessibleUserIds);
+        } else if (userRole === 'healthcare_client') {
+            // Healthcare clients see patients where they have an approved access request
+            const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const { data: approvedRequests } = await supabase
+                .from('access_requests')
+                .select('patient_id, encrypted_key')
+                .eq('requester_id', userId)
+                .eq('status', 'approved')
+                .gt('approved_at', twentyFourHoursAgo);
+
+            const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
+            
+            // They see their own patients (if any) OR approved requested patients
+            query = query.or(`user_id.eq.${userId},id.in.(${approvedPatientIds.length > 0 ? approvedPatientIds.join(',') : '00000000-0000-0000-0000-000000000000'})`);
+            
+            // We'll attach the shared keys to the patient objects after fetching
+            const { data: ownedPatients, error: ownedError } = await query.order('created_at', { ascending: false });
+            if (ownedError) throw ownedError;
+
+            const patientsWithKeys = ownedPatients.map(p => {
+                const request = approvedRequests?.find(r => r.patient_id === p.id);
+                return { ...p, shared_encryption_key: request?.encrypted_key };
+            });
+
+            return res.json({ success: true, patients: patientsWithKeys });
         } else {
             query = query.eq('user_id', userId);
         }
 
         const { data: patients, error } = await query.order('created_at', { ascending: false });
-
         if (error) throw error;
 
         // Sanitize patient responses
