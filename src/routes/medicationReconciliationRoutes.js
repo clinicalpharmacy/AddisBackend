@@ -14,16 +14,23 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(patientCode);
         const isIdSearch = isUUID || isNumeric;
 
-        let query = supabase.from('medication_reconciliations').select('*');
-        if (isIdSearch) {
-            query = query.eq('patient_id', patientCode);
+        // 🔐 ROBUST ID RESOLUTION: Convert any identifier (Code, Numeric ID, or UUID) to the correct patient record
+        const db = supabaseAdmin || supabase;
+        let pQuery = db.from('patients').select('id');
+        
+        if (isUUID) {
+            pQuery = pQuery.eq('id', patientCode);
+        } else if (isNumeric) {
+            pQuery = pQuery.eq('id', parseInt(patientCode)); // Numeric ID lookup
         } else {
-            // Resolve code to numeric ID
-            const db = supabaseAdmin || supabase;
-            const { data: patient } = await db.from('patients').select('id').eq('patient_code', patientCode).maybeSingle();
-            if (!patient) return res.json({ success: true, reconciliations: [], count: 0 });
-            query = query.eq('patient_id', patient.id);
+            pQuery = pQuery.eq('patient_code', patientCode); // PAT-XXX lookup
         }
+
+        const { data: patient } = await pQuery.maybeSingle();
+        if (!patient) return res.json({ success: true, reconciliations: [], count: 0 });
+        
+        // Final Query uses the exact ID from the patients table
+        let query = supabase.from('medication_reconciliations').select('*').eq('patient_id', patient.id);
         const { data, error } = await query
             .order('reconciliation_date', { ascending: false });
 
@@ -55,16 +62,22 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(patientCode);
         const isIdSearch = isUUID || isNumeric;
 
-        let query = supabase.from('medication_reconciliations').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type');
-        if (isIdSearch) {
-            query = query.eq('patient_id', patientCode);
+        // 🔐 ROBUST ID RESOLUTION
+        const db = supabaseAdmin || supabase;
+        let pQuery = db.from('patients').select('id');
+        
+        if (isUUID) {
+            pQuery = pQuery.eq('id', patientCode);
+        } else if (isNumeric) {
+            pQuery = pQuery.eq('id', parseInt(patientCode));
         } else {
-            // Resolve code to numeric ID
-            const db = supabaseAdmin || supabase;
-            const { data: patient } = await db.from('patients').select('id').eq('patient_code', patientCode).maybeSingle();
-            if (!patient) return res.json({ success: true, stats: { total: 0 } });
-            query = query.eq('patient_id', patient.id);
+            pQuery = pQuery.eq('patient_code', patientCode);
         }
+
+        const { data: patient } = await pQuery.maybeSingle();
+        if (!patient) return res.json({ success: true, stats: { total: 0 } });
+        
+        let query = supabase.from('medication_reconciliations').select('reconciliation_status, action_taken, discrepancy_type, reconciliation_type').eq('patient_id', patient.id);
         const { data, error } = await query;
 
         if (error) throw error;

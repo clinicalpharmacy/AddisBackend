@@ -438,8 +438,14 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
  
+        // 🔐 Resolve identifier and enforce UUID for this clinical table
         const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId) return res.json({ success: true, costs: [] });
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
+
+        if (!resolvedId || !isUUID) {
+            // Return empty if not found or not a UUID (numeric legacy IDs are incompatible with this clinical table)
+            return res.json({ success: true, costs: [] }); 
+        }
 
         let query = supabase.from('cost_analyses').select('*').eq('patient_id', resolvedId);
 
@@ -814,8 +820,11 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
  
+        // 🔐 Resolve and enforce UUID type
         const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
+
+        if (!resolvedId || !isUUID) {
             return res.json({ success: true, reconciliations: [] });
         }
 
