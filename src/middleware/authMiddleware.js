@@ -257,12 +257,18 @@ export async function getUserAccessibleData(userId, userRole, userCompanyId, use
         const companyRoles = ['company_user', 'company_admin', 'pharmacist', 'healthcare_client'];
         
         if (!companyId && (companyRoles.includes(userRole) || companyRoles.includes(userAccountType))) {
+            // Aggressive lookup across all user tables
             const { data: cu } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
             companyId = cu?.company_id;
             
             if (!companyId) {
                 const { data: u } = await db.from('users').select('company_id').eq('id', userId).maybeSingle();
                 companyId = u?.company_id;
+            }
+            
+            if (!companyId) {
+                const { data: s } = await db.from('social_users').select('company_id').eq('id', userId).maybeSingle();
+                companyId = s?.company_id;
             }
         }
 

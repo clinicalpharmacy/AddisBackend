@@ -98,9 +98,10 @@ router.get('/', authenticateToken, async (req, res) => {
         
         // Build the combined filter
         // Ensure userId is in accessibleUserIds
-        const activeUserIds = [...new Set([...(accessibleUserIds || []), userId])];
+        const userEmail = req.user.email;
+        const activeUserIdsWithEmail = [...new Set([...activeUserIds, userEmail])];
         
-        const accessibleValues = activeUserIds.join(',');
+        const accessibleValues = activeUserIdsWithEmail.join(',');
         const sharedValues = approvedPatientIds.length > 0 ? approvedPatientIds.join(',') : '00000000-0000-0000-0000-000000000000';
 
         // Filter: (owned by me/my company) OR (explicitly shared with me)
