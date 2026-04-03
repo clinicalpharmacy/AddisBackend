@@ -76,8 +76,8 @@ router.get('/', authenticateToken, async (req, res) => {
         if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
 
         const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-
-        let query = supabase.from('patients').select('*');
+        const db = supabaseAdmin || supabase;
+        let query = db.from('patients').select('*');
 
         if (userRole === 'admin') {
             // Admin sees all
@@ -96,7 +96,8 @@ router.get('/', authenticateToken, async (req, res) => {
             const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
             
             // They see their own patients (if any) OR approved requested patients
-            query = query.or(`user_id.eq.${userId},id.in.(${approvedPatientIds.length > 0 ? approvedPatientIds.join(',') : '00000000-0000-0000-0000-000000000000'})`);
+            const patientIdList = approvedPatientIds.length > 0 ? approvedPatientIds.map(id => `"${id}"`).join(',') : '"00000000-0000-0000-0000-000000000000"';
+            query = query.or(`user_id.eq.${userId},id.in.(${patientIdList})`);
             
             // We'll attach the shared keys to the patient objects after fetching
             const { data: ownedPatients, error: ownedError } = await query.order('created_at', { ascending: false });
@@ -107,7 +108,12 @@ router.get('/', authenticateToken, async (req, res) => {
                 return { ...p, shared_encryption_key: request?.encrypted_key };
             });
 
-            return res.json({ success: true, patients: patientsWithKeys });
+            return res.json({ 
+                success: true, 
+                patients: patientsWithKeys,
+                count: patientsWithKeys.length,
+                access_info: { role: userRole, source: 'hybrid_fetch' }
+            });
         } else {
             query = query.eq('user_id', userId);
         }
