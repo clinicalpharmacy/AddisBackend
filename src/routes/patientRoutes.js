@@ -170,7 +170,19 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
             if (!accessibleUserIds.includes(data.user_id)) {
-                return res.status(403).json({ success: false, error: 'Access denied' });
+                // Check if granted access via access_requests
+                const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const { data: access } = await db.from('access_requests')
+                    .select('id')
+                    .eq('patient_id', data.id)
+                    .eq('requester_id', userId)
+                    .eq('status', 'approved')
+                    .gt('approved_at', twentyFourHoursAgo)
+                    .maybeSingle();
+
+                if (!access) {
+                    return res.status(403).json({ success: false, error: 'Access denied' });
+                }
             }
         }
 
@@ -231,8 +243,20 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
             if (!accessibleUserIds.includes(data.user_id)) {
-                console.warn(`🔒 [BLOCK] Access denied for requester ${userId} to patient ${data.id} (owned by ${data.user_id})`);
-                return res.status(403).json({ success: false, error: 'Access denied' });
+                // Check if granted access via access_requests
+                const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const { data: access } = await db.from('access_requests')
+                    .select('id')
+                    .eq('patient_id', data.id)
+                    .eq('requester_id', userId)
+                    .eq('status', 'approved')
+                    .gt('approved_at', twentyFourHoursAgo)
+                    .maybeSingle();
+
+                if (!access) {
+                    console.warn(`🔒 [BLOCK] Access denied for requester ${userId} to patient ${data.id} (owned by ${data.user_id})`);
+                    return res.status(403).json({ success: false, error: 'Access denied' });
+                }
             }
         }
 

@@ -79,14 +79,23 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access DRN
-        if (userAccountType === 'individual' && userRole !== 'admin') {
-            return res.status(403).json({ success: false, error: 'DRN assessment is not available for individual subscribers' });
-        }
-
         const resolvedId = await resolvePatientId(patient_id);
         if (!resolvedId) {
             return res.status(400).json({ success: false, error: 'Invalid patient reference' });
+        }
+
+        const hasAccess = await verifyClinicalAccess(resolvedId, req);
+        
+        // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
+        if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && !req.authorizedSupport)) {
+            // Note: verifyClinicalAccess will handle the base ownership/company/support check.
+            // We only block individuals here if they aren't authorized or it's a general restriction.
+            if (userAccountType === 'individual' && userRole !== 'admin' && !hasAccess) {
+                return res.status(403).json({ success: false, error: 'DRN assessment is not available for individual subscribers' });
+            }
+            if (!hasAccess) {
+                return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+            }
         }
 
         const assessmentData = {
@@ -120,22 +129,17 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
 
-        // Restriction: Individual subscribers cannot access DRN
-        if (userAccountType === 'individual' && userRole !== 'admin') {
+        const resolvedId = await resolvePatientId(patientCode);
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.json({ success: true, assessments: [] });
+        }
+        
+        // Restriction for individuals - still block if they don't have clinical access (though verify already checked)
+        if (userAccountType === 'individual' && userRole !== 'admin' && !(await verifyClinicalAccess(resolvedId, req))) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
-        const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId) return res.json({ success: true, assessments: [] });
-
         let query = supabase.from('drn_assessments').select('*').eq('patient_id', resolvedId);
-
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (accessibleUserIds) {
-                query = query.in('user_id', accessibleUserIds);
-            }
-        }
 
         const { data, error } = await query.order('created_at', { ascending: false });
         if (error) throw error;
@@ -514,8 +518,8 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
         }
 
         // 2. Fetch medications for verified patient using patient's ID
-        let query = db.from('medication_history').select('*');
-        query = query.eq('patient_id', patient.id);
+        let query = (supabaseAdmin || supabase).from('medication_history').select('*');
+        query = query.eq('patient_id', resolvedId);
 
         const { data, error } = await query.order('start_date', { ascending: false });
         if (error) throw error;
@@ -540,6 +544,9 @@ router.post('/medication-history', authenticateToken, async (req, res) => {
         }
 
         const resolvedId = await resolvePatientId(req.body.patient_id || req.body.patient_code);
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+        }
         const medicationData = {
             ...req.body,
             patient_id: resolvedId,
@@ -625,6 +632,9 @@ router.post('/vitals', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const resolvedId = await resolvePatientId(req.body.patient_id);
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+        }
         const vitalsData = {
             ...req.body,
             patient_id: resolvedId, // Ensure patient_id is resolved numeric ID
@@ -679,16 +689,11 @@ router.get('/vitals/patient/:patientCode', authenticateToken, async (req, res) =
         const userAccountType = req.user.account_type;
 
         const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId) return res.json({ success: true, vitals: [] });
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.json({ success: true, vitals: [] });
+        }
 
         let query = (supabaseAdmin || supabase).from('vitals_history').select('*').eq('patient_id', resolvedId);
-
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (accessibleUserIds) {
-                query = query.in('created_by', accessibleUserIds);
-            }
-        }
 
         const { data, error } = await query.order('created_at', { ascending: false });
         if (data && data.length > 0) {
@@ -705,9 +710,13 @@ router.get('/vitals/patient/:patientCode', authenticateToken, async (req, res) =
 router.post('/labs-history', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
+        const resolvedId = await resolvePatientId(req.body.patient_id);
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+        }
         const labsData = {
             ...req.body,
-            patient_id: req.body.patient_id || null, // Ensure patient_id is included
+            patient_id: resolvedId, // Ensure patient_id is included
             created_by: userId,
             created_at: new Date().toISOString()
         };
@@ -758,16 +767,11 @@ router.get('/labs-history/patient/:patientCode', authenticateToken, async (req, 
         const userAccountType = req.user.account_type;
 
         const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId) return res.json({ success: true, labs: [] });
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.json({ success: true, labs: [] });
+        }
 
         let query = (supabaseAdmin || supabase).from('labs_history').select('*').eq('patient_id', resolvedId);
-
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType)
-            if (accessibleUserIds) {
-                query = query.in('created_by', accessibleUserIds);
-            }
-        }
 
         const { data, error } = await query.order('created_at', { ascending: false });
         if (data && data.length > 0) {
@@ -785,6 +789,9 @@ router.post('/reconciliations', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const resolvedId = await resolvePatientId(req.body.patient_id);
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
+        }
         const reconData = {
             ...req.body,
             patient_id: resolvedId,
@@ -812,16 +819,11 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
         const userAccountType = req.user.account_type;
  
         const resolvedId = await resolvePatientId(patientCode);
-        if (!resolvedId) return res.json({ success: true, reconciliations: [] });
+        if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
+            return res.json({ success: true, reconciliations: [] });
+        }
 
         let query = (supabaseAdmin || supabase).from('medication_reconciliations').select('*').eq('patient_id', resolvedId);
-
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (accessibleUserIds) {
-                query = query.in('created_by', accessibleUserIds);
-            }
-        }
 
         const { data, error } = await query.order('date', { ascending: false });
         if (error) throw error;
