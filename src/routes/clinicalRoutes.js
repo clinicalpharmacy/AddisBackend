@@ -21,6 +21,46 @@ async function resolvePatientId(identifier) {
     return data ? data.id : null;
 }
 
+/**
+ * 🛡️ Robust Clinical Access Check
+ * Verifies if a user has permission to see a specific patient's clinical data.
+ * Checks ownership, company membership, admin status, and approved access requests.
+ */
+async function verifyClinicalAccess(patientId, req) {
+    const userId = req.user.userId;
+    const userRole = req.user.role;
+    const userCompanyId = req.user.company_id;
+    const userAccountType = req.user.account_type;
+
+    // 1. Admin/Superadmin bypass
+    if (userRole === 'admin' || userRole === 'superadmin') return true;
+
+    const db = supabaseAdmin || supabase;
+
+    // 2. Resolve Patient Owner
+    const { data: patient, error: patientError } = await db.from('patients').select('id, user_id').eq('id', patientId).maybeSingle();
+    if (patientError || !patient) return false;
+
+    // 3. Simple Ownership
+    if (patient.user_id === userId) return true;
+
+    // 4. Company Access
+    const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
+    if (accessibleUserIds && accessibleUserIds.includes(patient.user_id)) return true;
+
+    // 5. Approved Access Request (Zero-Knowledge Support)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: access } = await db.from('access_requests')
+        .select('id')
+        .eq('patient_id', patientId)
+        .eq('requester_id', userId)
+        .eq('status', 'approved')
+        .gt('approved_at', twentyFourHoursAgo)
+        .maybeSingle();
+
+    return !!access;
+}
+
 // ARN Assessments
 router.post('/assessments/drn', authenticateToken, async (req, res) => {
     try {
@@ -468,20 +508,9 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
         }
 
-        const db = supabaseAdmin || supabase;
-        const { data: patient, error: patientError } = await db.from('patients').select('id, user_id').eq('id', resolvedId).maybeSingle();
-
-        if (patientError) throw patientError;
-        if (!patient) {
+        const hasAccess = await verifyClinicalAccess(resolvedId, req);
+        if (!hasAccess) {
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
-        }
-
-        // Manual access check
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (accessibleUserIds && accessibleUserIds.length > 0 && !accessibleUserIds.includes(patient.user_id)) {
-                return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
-            }
         }
 
         // 2. Fetch medications for verified patient using patient's ID
