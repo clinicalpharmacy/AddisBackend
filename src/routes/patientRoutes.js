@@ -100,14 +100,11 @@ router.get('/', authenticateToken, async (req, res) => {
         // Ensure userId is in accessibleUserIds
         const activeUserIds = [...new Set([...(accessibleUserIds || []), userId])];
         
-        const quotedAccessibleIds = activeUserIds.map(id => `"${id}"`).join(',');
-        const quotedSharedIds = approvedPatientIds.length > 0 
-            ? approvedPatientIds.map(id => `"${id}"`).join(',') 
-            : '"00000000-0000-0000-0000-000000000000"';
+        const accessibleValues = activeUserIds.join(',');
+        const sharedValues = approvedPatientIds.length > 0 ? approvedPatientIds.join(',') : '00000000-0000-0000-0000-000000000000';
 
         // Filter: (owned by me/my company) OR (explicitly shared with me)
-        // We use .or() with quoted values for PostgREST compatibility
-        query = query.or(`user_id.in.(${quotedAccessibleIds}),id.in.(${quotedSharedIds})`);
+        query = query.or(`user_id.in.(${accessibleValues}),id.in.(${sharedValues})`);
         
         const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
         
