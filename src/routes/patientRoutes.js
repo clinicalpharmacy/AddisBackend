@@ -146,7 +146,20 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
     try {
         const patientCode = req.params.patientCode;
         const db = supabaseAdmin || supabase;
-        let query = db.from('patients').select('*').eq('id', patientCode);
+        
+        // Fix: Determine if we should search by 'id' (bigint/uuid) or 'patient_code' (string)
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientCode);
+        const isNumeric = /^\d+$/.test(patientCode);
+        const isIdSearch = isUUID || isNumeric;
+
+        let query = db.from('patients').select('*');
+        
+        if (isIdSearch) {
+            query = query.eq('id', patientCode);
+        } else {
+            // If it's a "PAT..." string, search by the patient_code column instead of id
+            query = query.eq('patient_code', patientCode);
+        }
 
         const { data, error } = await query.maybeSingle();
 
