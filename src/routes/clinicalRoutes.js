@@ -472,19 +472,15 @@ router.delete('/costs/:id', authenticateToken, async (req, res) => {
 // Clinical Rules
 router.get('/clinical-rules', authenticateToken, async (req, res) => {
     try {
-        if (!supabaseAdmin) {
-            console.error('❌ supabaseAdmin not configured');
-            return res.status(503).json({ success: false, error: 'Database service unavailable' });
-        }
-
-        const { data, error } = await supabaseAdmin
+        const targetDb = supabaseAdmin || supabase;
+        const { data, error } = await targetDb
             .from('clinical_rules')
             .select('*')
             .eq('is_active', true)
             .order('created_at', { ascending: false });
 
         if (error) {
-            console.error('❌ Error fetching clinical rules from Supabase:', error);
+            console.error('❌ Error fetching clinical rules:', error);
             throw error;
         }
 
