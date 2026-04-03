@@ -79,61 +79,59 @@ router.get('/', authenticateToken, async (req, res) => {
         const db = supabaseAdmin || supabase;
         let query = db.from('patients').select('*');
 
-        if (userRole === 'admin') {
-            // Admin sees all
-        } else if (userAccountType === 'company_user' || userRole === 'company_admin') {
-            query = query.in('user_id', accessibleUserIds);
-        } else if (userRole === 'healthcare_client') {
-            // Healthcare clients see patients where they have an approved access request
-            const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            const { data: approvedRequests } = await supabase
-                .from('access_requests')
-                .select('patient_id, encrypted_key')
-                .eq('requester_id', userId)
-                .eq('status', 'approved')
-                .gt('approved_at', twentyFourHoursAgo);
+        // 🔐 UNIFIED ACCESS QUERY:
+        // Users see:
+        // 1. Patients they created or own (based on accessibleUserIds / company logic)
+        // 2. Patients shared with them via approved access_requests (if within 24h)
+        
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        
+        // Fetch approved access requests for this specific user
+        const { data: approvedRequests } = await db
+            .from('access_requests')
+            .select('patient_id, encrypted_key')
+            .eq('requester_id', userId)
+            .eq('status', 'approved')
+            .gt('approved_at', twentyFourHoursAgo);
 
-            const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
-            
-            // They see their own patients (if any) OR approved requested patients
-            const patientIdList = approvedPatientIds.length > 0 ? approvedPatientIds.map(id => `"${id}"`).join(',') : '"00000000-0000-0000-0000-000000000000"';
-            query = query.or(`user_id.eq.${userId},id.in.(${patientIdList})`);
-            
-            // We'll attach the shared keys to the patient objects after fetching
-            const { data: ownedPatients, error: ownedError } = await query.order('created_at', { ascending: false });
-            if (ownedError) throw ownedError;
+        const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
+        
+        // Build the combined filter
+        // Ensure userId is in accessibleUserIds
+        const activeUserIds = [...new Set([...(accessibleUserIds || []), userId])];
+        
+        const quotedAccessibleIds = activeUserIds.map(id => `"${id}"`).join(',');
+        const quotedSharedIds = approvedPatientIds.length > 0 
+            ? approvedPatientIds.map(id => `"${id}"`).join(',') 
+            : '"00000000-0000-0000-0000-000000000000"';
 
-            const patientsWithKeys = ownedPatients.map(p => {
-                const request = approvedRequests?.find(r => r.patient_id === p.id);
-                return { ...p, shared_encryption_key: request?.encrypted_key };
-            });
-
-            return res.json({ 
-                success: true, 
-                patients: patientsWithKeys,
-                count: patientsWithKeys.length,
-                access_info: { role: userRole, source: 'hybrid_fetch' }
-            });
-        } else {
-            query = query.eq('user_id', userId);
+        // Filter: (owned by me/my company) OR (explicitly shared with me)
+        // We use .or() with quoted values for PostgREST compatibility
+        query = query.or(`user_id.in.(${quotedAccessibleIds}),id.in.(${quotedSharedIds})`);
+        
+        const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
+        
+        if (fetchError) {
+            console.error('❌ [List Fetch] error:', fetchError);
+            throw fetchError;
         }
 
-        const { data: patients, error } = await query.order('created_at', { ascending: false });
-        if (error) throw error;
-
-        // Sanitize patient responses
-        const sanitizedPatients = patients?.map(p => {
-            let processedPatient = { ...p };
-            return processedPatient;
-        }) || [];
-
-        res.json({
-            success: true,
-            patients: sanitizedPatients,
-            count: sanitizedPatients.length,
-            access_info: { role: userRole }
+        // Attach shared encryption keys where applicable (for support staff decryption)
+        const sanitizedPatients = (patients || []).map(p => {
+            const request = approvedRequests?.find(r => r.patient_id === p.id);
+            return { 
+                ...p, 
+                shared_encryption_key: request?.encrypted_key || null,
+                _is_shared: !!request
+            };
         });
 
+        return res.json({ 
+            success: true, 
+            patients: sanitizedPatients,
+            count: sanitizedPatients.length,
+            access_info: { role: userRole, combined: true }
+        });
     } catch (error) {
         console.error('❌ [DATABASE] Failed to fetch patient list:', error.message);
         res.status(500).json({ success: false, error: error.message || 'Failed to load patients' });
