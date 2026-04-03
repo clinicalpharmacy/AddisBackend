@@ -290,11 +290,30 @@ export async function getUserAccessibleData(userId, userRole, userCompanyId, use
             return allIdsInCompany;
         }
 
-        // 4. INDIVIDUALS - Only see their own data
-        return [userId];
+        // 4. INDIVIDUALS / HEALTHCARE CLIENTS - See their own data
+        // For healthcare clients, we need to find if there's an associated HCC string ID
+        const activeIds = [userId];
+        
+        try {
+            // Check users table for additional identifiers (like HCC- strings)
+            const { data: u } = await db.from('users').select('id, healthcare_client_id').eq('id', userId).maybeSingle();
+            
+            if (u) {
+                // If the user's UUID is linked to an HCC ID, include both
+                if (u.healthcare_client_id && !activeIds.includes(u.healthcare_client_id)) {
+                    activeIds.push(u.healthcare_client_id);
+                }
+            }
+            
+            // If the current user's ID was NOT found by UUID, maybe the ID IS the HCC string
+            if (!u && typeof userId === 'string' && userId.startsWith('HCC-')) {
+                // This is already in activeIds
+            }
+        } catch (e) {
+            console.warn('⚠️ [DATA ISOLATION] User lookup failed for IDs:', e.message);
+        }
 
-        // 4. INDIVIDUALS - Only see their own data
-        return [userId];
+        return activeIds;
 
     } catch (error) {
         console.error('❌ [DATA ISOLATION] Error:', error);
