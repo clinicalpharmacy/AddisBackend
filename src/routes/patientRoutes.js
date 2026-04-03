@@ -112,8 +112,12 @@ router.get('/', authenticateToken, async (req, res) => {
         const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
         
         if (fetchError) {
-            console.error('❌ [List Fetch] error:', fetchError);
+            console.error('❌ [DATABASE] Patient list fetch failed:', fetchError.message);
             throw fetchError;
+        }
+
+        if (!patients || patients.length === 0) {
+            console.warn(`⚠️ [List Fetch] Zero results found for User: ${userId} (Role: ${userRole}). Active IDs: ${quotedAccessibleIds}`);
         }
 
         // Attach shared encryption keys where applicable (for support staff decryption)
@@ -410,8 +414,8 @@ router.post('/', authenticateToken, async (req, res) => {
 
         const patientToCreate = {
             ...patientData,
-            user_id: patientData.user_id && patientData.user_id !== 'admin' ? patientData.user_id : user_id,
-            created_by: created_by,
+            user_id: (patientData.user_id && patientData.user_id !== 'admin') ? patientData.user_id : userId,
+            created_by: userId,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };

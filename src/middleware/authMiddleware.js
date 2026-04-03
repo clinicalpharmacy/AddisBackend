@@ -242,27 +242,31 @@ export const requirePatientLimit = async (req, res, next) => {
 // Data access isolation helper (from server.js)
 export async function getUserAccessibleData(userId, userRole, userCompanyId, userAccountType = 'individual') {
     try {
+        const db = (typeof supabaseAdmin !== 'undefined' ? supabaseAdmin : supabase);
+        
         // 1. SUPERADMIN - Full bypass (returns null)
         if (userRole === 'superadmin') {
             return null;
         }
 
-        // 2. ADMIN - Sees everything but still subject to approval/verification
+        // 2. ADMIN - Sees everything 
         if (userRole === 'admin') {
-            const { data: allUsers } = await supabase.from('users').select('id');
+            const { data: allUsers } = await db.from('users').select('id');
             const userIds = allUsers?.map(u => u.id) || [userId];
             return userIds;
         }
 
         let companyId = userCompanyId;
 
-        // If company_id isn't provided, try to find it
+        // If company_id isn't provided, try to find it using Admin client to bypass RLS
         if (!companyId) {
-            if (userAccountType === 'company_user' || userRole === 'company_user') {
-                const { data: cu } = await supabase.from('company_users').select('company_id').eq('id', userId).maybeSingle();
+            if (userAccountType === 'company_user' || userRole === 'company_user' || userRole === 'healthcare_client') {
+                const { data: cu } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
                 companyId = cu?.company_id;
-            } else {
-                const { data: u } = await supabase.from('users').select('company_id').eq('id', userId).maybeSingle();
+            } 
+            
+            if (!companyId) {
+                const { data: u } = await db.from('users').select('company_id').eq('id', userId).maybeSingle();
                 companyId = u?.company_id;
             }
         }
@@ -271,8 +275,8 @@ export async function getUserAccessibleData(userId, userRole, userCompanyId, use
         if (companyId) {
             // Get all users from both tables sharing this company_id
             const [{ data: users }, { data: companyUsers }] = await Promise.all([
-                supabase.from('users').select('id').eq('company_id', companyId),
-                supabase.from('company_users').select('id').eq('company_id', companyId)
+                db.from('users').select('id').eq('company_id', companyId),
+                db.from('company_users').select('id').eq('company_id', companyId)
             ]);
 
             const allIdsInCompany = [
@@ -281,10 +285,13 @@ export async function getUserAccessibleData(userId, userRole, userCompanyId, use
             ];
 
             // Ensure current user is in the list
-            if (!allIdsInCompany.includes(userId)) allIdsInCompany.push(userId);
+            if (userId && !allIdsInCompany.includes(userId)) allIdsInCompany.push(userId);
 
             return allIdsInCompany;
         }
+
+        // 4. INDIVIDUALS - Only see their own data
+        return [userId];
 
         // 4. INDIVIDUALS - Only see their own data
         return [userId];
