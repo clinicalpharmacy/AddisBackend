@@ -239,31 +239,26 @@ export const requirePatientLimit = async (req, res, next) => {
     }
 };
 
-// Data access isolation helper (from server.js)
 export async function getUserAccessibleData(userId, userRole, userCompanyId, userAccountType = 'individual') {
     try {
         const db = (typeof supabaseAdmin !== 'undefined' ? supabaseAdmin : supabase);
         
-        // 1. SUPERADMIN - Full bypass (returns null)
-        if (userRole === 'superadmin') {
-            return null;
-        }
+        // 1. SUPERADMIN
+        if (userRole === 'superadmin') return null;
 
-        // 2. ADMIN - Sees everything 
+        // 2. ADMIN
         if (userRole === 'admin') {
-            const { data: allUsers } = await db.from('users').select('id');
-            const userIds = allUsers?.map(u => u.id) || [userId];
-            return userIds;
+            const { data } = await db.from('users').select('id');
+            return data?.map(u => u.id) || [userId];
         }
 
+        // 3. COMPANY CONTEXT (Pharmacists, Staff, etc.)
         let companyId = userCompanyId;
-
-        // If company_id isn't provided, try to find it using Admin client to bypass RLS
-        if (!companyId) {
-            if (userAccountType === 'company_user' || userRole === 'company_user' || userRole === 'healthcare_client') {
-                const { data: cu } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
-                companyId = cu?.company_id;
-            } 
+        const companyRoles = ['company_user', 'company_admin', 'pharmacist', 'healthcare_client'];
+        
+        if (!companyId && (companyRoles.includes(userRole) || companyRoles.includes(userAccountType))) {
+            const { data: cu } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
+            companyId = cu?.company_id;
             
             if (!companyId) {
                 const { data: u } = await db.from('users').select('company_id').eq('id', userId).maybeSingle();
@@ -271,52 +266,38 @@ export async function getUserAccessibleData(userId, userRole, userCompanyId, use
             }
         }
 
-        // 2 & 3. COMPANY USERS & ADMINS - Return all IDs in the same company
         if (companyId) {
-            // Get all users from both tables sharing this company_id
             const [{ data: users }, { data: companyUsers }] = await Promise.all([
                 db.from('users').select('id').eq('company_id', companyId),
                 db.from('company_users').select('id').eq('company_id', companyId)
             ]);
-
-            const allIdsInCompany = [
+            
+            const allIds = [
                 ...(users?.map(u => u.id) || []),
                 ...(companyUsers?.map(u => u.id) || [])
             ];
-
-            // Ensure current user is in the list
-            if (userId && !allIdsInCompany.includes(userId)) allIdsInCompany.push(userId);
-
-            return allIdsInCompany;
+            if (!allIds.includes(userId)) allIds.push(userId);
+            return allIds;
         }
 
-        // 4. INDIVIDUALS / HEALTHCARE CLIENTS - See their own data
-        // For healthcare clients, we need to find if there's an associated HCC string ID
+        // 4. INDIVIDUAL / PERSONAL CONTEXT (Fallback)
         const activeIds = [userId];
-        
         try {
-            // Check users table for additional identifiers (like HCC- strings)
-            const { data: u } = await db.from('users').select('id, healthcare_client_id').eq('id', userId).maybeSingle();
-            
-            if (u) {
-                // If the user's UUID is linked to an HCC ID, include both
-                if (u.healthcare_client_id && !activeIds.includes(u.healthcare_client_id)) {
-                    activeIds.push(u.healthcare_client_id);
-                }
+            const { data: userRecord } = await db.from('users').select('id, healthcare_client_id').eq('id', userId).maybeSingle();
+            if (userRecord?.healthcare_client_id && !activeIds.includes(userRecord.healthcare_client_id)) {
+                activeIds.push(userRecord.healthcare_client_id);
             }
-            
-            // If the current user's ID was NOT found by UUID, maybe the ID IS the HCC string
-            if (!u && typeof userId === 'string' && userId.startsWith('HCC-')) {
-                // This is already in activeIds
+            if (!userRecord && typeof userId === 'string' && userId.startsWith('HCC-')) {
+                // already in list
             }
         } catch (e) {
-            console.warn('⚠️ [DATA ISOLATION] User lookup failed for IDs:', e.message);
+            console.warn('⚠️ [DATA ISOLATION] User-HCC mapping lookup failed:', e.message);
         }
 
         return activeIds;
 
     } catch (error) {
-        console.error('❌ [DATA ISOLATION] Error:', error);
-        return [userId]; // Fallback to self-only
+        console.error('❌ [DATA ISOLATION] Critical Error:', error);
+        return [userId];
     }
 }
