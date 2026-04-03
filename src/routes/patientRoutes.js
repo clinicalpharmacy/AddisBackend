@@ -97,20 +97,25 @@ router.get('/', authenticateToken, async (req, res) => {
         const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
         
         // Build the combined filter
-        // Ensure userId is in accessibleUserIds
+        // 🔐 INCLUSIVE DATA RETRIEVAL (UUID + Email + Company)
         const userEmail = req.user.email;
-        const activeUserIdsWithEmail = [...new Set([...activeUserIds, userEmail])];
+        const activeIds = [...new Set([...(accessibleUserIds || []), userId, userEmail])];
         
-        const accessibleValues = activeUserIdsWithEmail.join(',');
-        const sharedValues = approvedPatientIds.length > 0 ? approvedPatientIds.join(',') : '00000000-0000-0000-0000-000000000000';
-
-        // Filter: (owned by me/my company) OR (explicitly shared with me)
-        query = query.or(`user_id.in.(${accessibleValues}),id.in.(${sharedValues})`);
+        // Build OR conditions explicitly to avoid PostgREST type mismatch errors
+        // Example: user_id.eq.UUID,user_id.eq.Email,id.in.(SharedIDs)
+        let ownerConditions = activeIds.map(id => `user_id.eq.${id}`).join(',');
+        let sharedCondition = approvedPatientIds.length > 0 ? `,id.in.(${approvedPatientIds.join(',')})` : '';
+        
+        query = query.or(`${ownerConditions}${sharedCondition}`);
         
         const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
         
         if (fetchError) {
-            console.error('❌ [DATABASE] Patient list fetch failed:', fetchError.message);
+            console.error('❌ [DATABASE] Patient retrieval failed. Query attempted for:', activeIds);
+            console.error('DATABASE ERROR:', fetchError.message);
+            // Fallback: try with only the UUID if the mixed-type query failed (to avoid 500 error)
+            const { data: fallbackPatients, error: fallbackError } = await db.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
+            if (!fallbackError) return res.json({ success: true, patients: fallbackPatients || [], message: "Fallback results shown due to type mismatch" });
             throw fetchError;
         }
 
