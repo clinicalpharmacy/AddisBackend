@@ -246,18 +246,26 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     try {
         const admin_id = req.user.userId || req.user.id;
 
-        // Fetch approvals with minimal joins to ensure DB_SYNC reliability
-        const { data, error } = await db.from('access_requests')
-            .select(`*`)
+        // 1. Fetch raw access records
+        const { data: records, error } = await db.from('access_requests')
+            .select('*')
             .eq('requester_id', admin_id)
             .eq('status', 'approved');
 
         if (error) throw error;
+        if (!records || records.length === 0) return res.json({ success: true, support_patients: [] });
 
-        res.json({ success: true, support_patients: data || [] });
+        // 2. Hydrate records with patient/owner metadata manually (Robust Join)
+        const hydrated = await Promise.all(records.map(async (row) => {
+            const { data: patient } = await db.from('patients').select('id, full_name, patient_code').eq('id', row.patient_id).maybeSingle();
+            const { data: owner } = await db.from('users').select('full_name, email').eq('id', row.owner_id).maybeSingle();
+            return { ...row, patient, owner };
+        }));
+
+        res.json({ success: true, support_patients: hydrated });
     } catch (err) {
         console.error('❌ [ActiveSupport] Fetch error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch assigned support patients', details: err.message });
+        res.status(500).json({ success: false, error: 'Failed to access support vault.', details: err.message });
     }
 });
 
@@ -267,17 +275,28 @@ router.get('/active-support', authenticateToken, async (req, res) => {
  */
 router.get('/pending-admin', authenticateToken, async (req, res) => {
     try {
-        const { data, error } = await db.from('access_requests')
-            .select(`*`)
+        // 1. Fetch raw pending records
+        const { data: records, error } = await db.from('access_requests')
+            .select('*')
             .in('status', ['pending', 'granted'])
             .order('created_at', { ascending: false });
 
         if (error) throw error;
+        if (!records || records.length === 0) return res.json({ success: true, requests: [] });
 
-        res.json({ success: true, requests: data || [] });
+        // 2. Hydrate metadata
+        const hydrated = await Promise.all(records.map(async (row) => {
+            const { data: owner } = await db.from('users').select('id, full_name, email').eq('id', row.owner_id).maybeSingle();
+            const { data: patient } = row.patient_id 
+                ? await db.from('patients').select('id, full_name, patient_code').eq('id', row.patient_id).maybeSingle()
+                : { data: null };
+            return { ...row, owner, patient };
+        }));
+
+        res.json({ success: true, requests: hydrated });
     } catch (err) {
         console.error('❌ [PendingAdmin] Fetch error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch pending data sharing requests', details: err.message });
+        res.status(500).json({ success: false, error: 'Failed to fetch pending requests.', details: err.message });
     }
 });
 
