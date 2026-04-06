@@ -135,27 +135,33 @@ router.get('/pending', authenticateToken, async (req, res) => {
 });
 
 /**
- * ✅ APPROVE A REQUEST
- * Owner provides the encrypted patient key for the requester.
+ * ✅ APPROVE A REQUEST (Admin or Owner)
+ * Admin directly approves a pending data-sharing request.
  */
 router.post('/approve', authenticateToken, async (req, res) => {
     try {
         const { request_id, encrypted_key } = req.body;
-        const owner_id = req.user.userId || req.user.id;
+        const caller_id = req.user.userId || req.user.id;
+        const is_admin = req.user.role === 'admin' || req.user.role === 'superadmin';
 
-        if (!request_id || !encrypted_key) {
-            return res.status(400).json({ success: false, error: 'Request ID and encrypted key are required' });
+        if (!request_id) {
+            return res.status(400).json({ success: false, error: 'Request ID is required' });
         }
 
-        const { data, error } = await db.from('access_requests')
+        // Build query — admin can approve any record, owner can only approve their own
+        let query = db.from('access_requests')
             .update({ 
                 status: 'approved',
-                encrypted_key,
+                ...(encrypted_key ? { encrypted_key } : {}),
                 approved_at: new Date().toISOString()
             })
-            .eq('id', request_id)
-            .eq('owner_id', owner_id)
-            .select().single();
+            .eq('id', request_id);
+
+        if (!is_admin) {
+            query = query.eq('owner_id', caller_id);
+        }
+
+        const { data, error } = await query.select().single();
 
         if (error) throw error;
 
@@ -163,6 +169,30 @@ router.post('/approve', authenticateToken, async (req, res) => {
     } catch (err) {
         console.error('❌ [AccessRequest] Approval error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to approve request' });
+    }
+});
+
+/**
+ * ❌ REJECT / DELETE A REQUEST (Admin)
+ * Admin deletes a pending data-sharing request they don't want to approve.
+ */
+router.post('/reject', authenticateToken, async (req, res) => {
+    try {
+        const { request_id } = req.body;
+        if (!request_id) {
+            return res.status(400).json({ success: false, error: 'Request ID is required' });
+        }
+
+        const { error } = await db.from('access_requests')
+            .delete()
+            .eq('id', request_id);
+
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Request rejected and removed.' });
+    } catch (err) {
+        console.error('❌ [Reject] Error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to reject request' });
     }
 });
 
@@ -237,7 +267,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
 
 /**
  * 🔔 GET ALL PENDING DATA SHARING REQUESTS FOR ADMIN
- * Admin can see all users who have requested data sharing (pending status).
+ * Admin can see all users who have requested data sharing (pending/granted status).
  */
 router.get('/pending-admin', authenticateToken, async (req, res) => {
     try {
@@ -247,7 +277,7 @@ router.get('/pending-admin', authenticateToken, async (req, res) => {
                 owner:owner_id(id, full_name, email),
                 patient:patient_id(id, full_name, patient_code)
             `)
-            .eq('status', 'pending')
+            .in('status', ['pending', 'granted'])
             .order('created_at', { ascending: false });
 
         if (error) throw error;
