@@ -1032,6 +1032,32 @@ router.post('/resend-verification', async (req, res) => {
 });
 
 /**
+ * 🔍 SEARCH SPECIALIST BY EMAIL
+ * Allows owners to manually link a troubleshoot specialist by email.
+ */
+router.get('/search', authenticateToken, async (req, res) => {
+    try {
+        const { email } = req.query;
+        if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
+
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('id, full_name, role, public_key')
+            .eq('email', email)
+            .single();
+
+        if (error || !user) {
+            return res.status(404).json({ success: false, error: 'User not found' });
+        }
+
+        res.json({ success: true, user });
+    } catch (err) {
+        console.error('Search error:', err);
+        res.status(500).json({ success: false, error: 'Internal search error' });
+    }
+});
+
+/**
  * 🔐 UPDATE ENCRYPTION KEYS (Zero-Knowledge PKI)
  * Saves the user's Public Key and Wrapped Private Key.
  */
