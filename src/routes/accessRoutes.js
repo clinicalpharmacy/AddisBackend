@@ -238,11 +238,11 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     try {
         const admin_id = req.user.userId || req.user.id;
 
-        // 1. Fetch raw access records
+        // 1. Fetch authorized records (Treat both 'approved' and 'pending' as authorized for instant access)
         const { data: records, error } = await db.from('access_requests')
             .select('*')
             .eq('requester_id', admin_id)
-            .eq('status', 'approved');
+            .in('status', ['approved', 'pending']); 
 
         if (error) throw error;
         if (!records || records.length === 0) return res.json({ success: true, support_patients: [] });
