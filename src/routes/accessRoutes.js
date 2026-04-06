@@ -305,12 +305,7 @@ router.post('/revoke-support', authenticateToken, async (req, res) => {
         const { patient_id } = req.body;
         const owner_id = req.user.userId || req.user.id;
 
-        if (!patient_id) return res.status(400).json({ success: false, error: 'Patient ID is required' });
-
-        const { error } = await db.from('access_requests')
-            .delete()
-            .eq('patient_id', patient_id)
-        // Build query
+        // Build query to revoke active 'approved' troubleshooting grant
         let query = db.from('access_requests')
             .delete()
             .eq('owner_id', owner_id)
