@@ -15,8 +15,7 @@ router.get('/security-users', authenticateToken, async (req, res) => {
         const { data: users, error } = await db
             .from('users')
             .select('id, full_name, email, public_key')
-            .eq('role', 'admin')
-            .not('public_key', 'is', null);
+            .eq('role', 'admin');
 
         if (error) throw error;
         res.json({ success: true, users: users || [] });
