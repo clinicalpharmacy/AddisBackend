@@ -248,11 +248,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
 
         // Fetch approvals with minimal joins to ensure DB_SYNC reliability
         const { data, error } = await db.from('access_requests')
-            .select(`
-                *,
-                patient:patient_id(id, full_name, patient_code),
-                owner:owner_id(full_name, email)
-            `)
+            .select(`*`)
             .eq('requester_id', admin_id)
             .eq('status', 'approved');
 
@@ -261,7 +257,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
         res.json({ success: true, support_patients: data || [] });
     } catch (err) {
         console.error('❌ [ActiveSupport] Fetch error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch assigned support patients' });
+        res.status(500).json({ success: false, error: 'Failed to fetch assigned support patients', details: err.message });
     }
 });
 
@@ -272,11 +268,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
 router.get('/pending-admin', authenticateToken, async (req, res) => {
     try {
         const { data, error } = await db.from('access_requests')
-            .select(`
-                *,
-                owner:owner_id(id, full_name, email),
-                patient:patient_id(id, full_name, patient_code)
-            `)
+            .select(`*`)
             .in('status', ['pending', 'granted'])
             .order('created_at', { ascending: false });
 
@@ -285,7 +277,7 @@ router.get('/pending-admin', authenticateToken, async (req, res) => {
         res.json({ success: true, requests: data || [] });
     } catch (err) {
         console.error('❌ [PendingAdmin] Fetch error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch pending data sharing requests' });
+        res.status(500).json({ success: false, error: 'Failed to fetch pending data sharing requests', details: err.message });
     }
 });
 
