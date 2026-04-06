@@ -169,7 +169,7 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
             // Only redact if user is individual AND not the owner/admin
             if (userAccountType === 'individual' && userRole !== 'admin' && p.user_id !== userId) {
                 if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
-                    processedPatient.full_name = 'Patient Profile';
+                    processedPatient.full_name = 'MR profile';
                 }
             }
             return processedPatient;
@@ -233,7 +233,7 @@ router.get('/code/:patientCode', authenticateToken, async (req, res) => {
             const { patient_code, ...rest } = data;
             const processed = { ...rest };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
-                processed.full_name = 'Patient Profile';
+                processed.full_name = 'MR profile';
             }
             return res.json({ success: true, patient: processed });
         }
@@ -420,9 +420,9 @@ router.post('/', authenticateToken, async (req, res) => {
 
         // For individual users with no name, generate a default name
         if (isIndividual && (!patientData.full_name || patientData.full_name.trim() === '')) {
-            // Updated: Default to 'Patient Profile' for all non-admin individual roles
+            // Updated: Default to 'MR profile' for all non-admin individual roles
             const isRestrictedIndividual = userAccountType === 'individual' && userRole !== 'admin';
-            const defaultName = isRestrictedIndividual ? 'Patient Profile' : `Patient ${patientData.patient_code || new Date().getTime()}`;
+            const defaultName = isRestrictedIndividual ? 'MR profile' : `Patient ${patientData.patient_code || new Date().getTime()}`;
             patientData.full_name = defaultName;
         }
 
@@ -464,7 +464,7 @@ router.post('/', authenticateToken, async (req, res) => {
         if (userAccountType === 'individual' && userRole !== 'admin' && data.user_id !== userId) {
             const processed = { ...data };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
-                processed.full_name = 'Patient Profile';
+                processed.full_name = 'MR profile';
             }
             return res.status(201).json({ success: true, message: 'Created', patient: processed });
         }
