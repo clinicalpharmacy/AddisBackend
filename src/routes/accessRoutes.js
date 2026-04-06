@@ -207,34 +207,26 @@ router.get('/granted', authenticateToken, async (req, res) => {
 
         if (!patient_id) return res.status(400).json({ success: false, error: 'Patient ID is required' });
 
-        // 🛡️ Robustness: Handle both UUID and Integer IDs
-        const pidStr = String(patient_id || '');
-        const isUUID = pidStr.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-        const isNumeric = pidStr.match(/^\d+$/);
+        // 1. Identify which user owns this patient (to support Global Grants)
+        const { data: patient } = await db.from('patients').select('user_id').eq('id', patient_id).maybeSingle();
+        const owner_id = patient?.user_id;
 
-        if (!isUUID && !isNumeric) {
-            console.warn(`⚠️ [Access] Invalid ID format for patient_id: ${patient_id}`);
-            return res.json({ success: true, message: 'Valid ID format required', request: null });
-        }
-
-        // AUTO-EXPIRY: Only fetch approved requests from the last 24 hours
-        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
+        // 2. Query for a Specific Grant for this patient OR a Global Grant for this User
+        // We prioritize Specific grants by sorting NULL values (for global) to the end.
         const { data, error } = await db.from('access_requests')
             .select('*')
-            .eq('patient_id', patient_id)
             .eq('requester_id', requester_id)
             .eq('status', 'approved')
-            .gt('approved_at', twentyFourHoursAgo) // Access expires after 24h
-            .order('created_at', { ascending: false })
-            .maybeSingle();
+            .or(`patient_id.eq.${patient_id},and(patient_id.is.null,owner_id.eq.${owner_id})`)
+            .order('patient_id', { ascending: false, nullsFirst: false })
+            .limit(1);
 
         if (error) throw error;
 
-        res.json({ success: true, request: data });
+        res.json({ success: true, request: data?.[0] || null });
     } catch (err) {
-        console.error('❌ [Access] Granted check error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to verify secure access' });
+        console.error('❌ [AccessRequest] Status check error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to verify access status' });
     }
 });
 
