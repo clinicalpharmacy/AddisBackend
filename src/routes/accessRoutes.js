@@ -74,14 +74,15 @@ router.post('/support-activate', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Target Admin and Encrypted Key are required' });
         }
 
-        // 🛡️ Robustness: Handle both UUID and Integer IDs
-        const pidStr = String(patient_id || '');
-        const isUUID = pidStr.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-        const isNumeric = pidStr.match(/^\d+$/);
+        if (patient_id) {
+            const pidStr = String(patient_id);
+            const isUUID = pidStr.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+            const isNumeric = pidStr.match(/^\d+$/);
 
-        if (!isUUID && !isNumeric) {
-            console.warn(`⚠️ [Support] Invalid ID format for patient_id: ${patient_id}`);
-            return res.status(400).json({ success: false, error: 'Valid Patient ID (UUID or Numeric) is required.' });
+            if (!isUUID && !isNumeric) {
+                console.warn(`⚠️ [Support] Invalid ID format for patient_id: ${patient_id}`);
+                return res.status(400).json({ success: false, error: 'Valid Patient ID (UUID or Numeric) is required.' });
+            }
         }
 
         // Create or update access record with 'approved' status
