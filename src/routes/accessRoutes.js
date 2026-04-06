@@ -70,8 +70,8 @@ router.post('/support-activate', authenticateToken, async (req, res) => {
         const { patient_id, admin_id, encrypted_key } = req.body;
         const owner_id = req.user.userId || req.user.id;
 
-        if (!patient_id || !admin_id || !encrypted_key) {
-            return res.status(400).json({ success: false, error: 'Target Admin, Patient, and Encrypted Key are required' });
+        if (!admin_id || !encrypted_key) {
+            return res.status(400).json({ success: false, error: 'Target Admin and Encrypted Key are required' });
         }
 
         // 🛡️ Robustness: Handle both UUID and Integer IDs
@@ -84,16 +84,20 @@ router.post('/support-activate', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Valid Patient ID (UUID or Numeric) is required.' });
         }
 
-        // Create or update access record with 'active' status
+        // Create or update access record with 'approved' status
+        const upsertPayload = {
+            patient_id: patient_id || null,
+            owner_id,
+            requester_id: admin_id, // Admin is the receiver
+            encrypted_key,
+            status: 'approved',
+            approved_at: new Date().toISOString()
+        };
+
+        // Use upsert — ensure we don't create duplicates for the same (patient_id, requester_id, owner_id)
+        // Note: For global grants, patient_id is null.
         const { data, error } = await db.from('access_requests')
-            .upsert({
-                patient_id,
-                owner_id,
-                requester_id: admin_id, // Admin is the receiver
-                encrypted_key,
-                status: 'approved',
-                approved_at: new Date().toISOString()
-            }, { 
+            .upsert(upsertPayload, { 
                 onConflict: 'patient_id, requester_id', 
                 ignoreDuplicates: false 
             })
@@ -306,15 +310,51 @@ router.post('/revoke-support', authenticateToken, async (req, res) => {
         const { error } = await db.from('access_requests')
             .delete()
             .eq('patient_id', patient_id)
+        // Build query
+        let query = db.from('access_requests')
+            .delete()
             .eq('owner_id', owner_id)
             .eq('status', 'approved');
 
-        if (error) throw error;
+        if (patient_id) {
+            query = query.eq('patient_id', patient_id);
+        } else {
+            query = query.is('patient_id', null);
+        }
+
+        const { error: deleteError } = await query;
+
+        if (deleteError) throw deleteError;
 
         res.json({ success: true, message: 'Support access revoked successfully' });
     } catch (err) {
         console.error('❌ [RevokeSupport] Error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to revoke support access' });
+    }
+});
+
+/**
+ * 🔒 GET MY ACTIVE GRANTS
+ * The owner sees current active troubleshooting grants they've authorized.
+ */
+router.get('/my-active-grants', authenticateToken, async (req, res) => {
+    try {
+        const owner_id = req.user.userId || req.user.id;
+        
+        const { data: grants, error: fetchError } = await db.from('access_requests')
+            .select(`
+                *,
+                requester:requester_id(id, full_name, email)
+            `)
+            .eq('owner_id', owner_id)
+            .eq('status', 'approved');
+
+        if (fetchError) throw fetchError;
+
+        res.json({ success: true, grants: grants || [] });
+    } catch (err) {
+        console.error('❌ [MyActiveGrants] Error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch active grants' });
     }
 });
 
