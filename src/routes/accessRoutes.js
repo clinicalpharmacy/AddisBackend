@@ -11,30 +11,46 @@ const db = supabaseAdmin || supabase;
  */
 router.post('/request', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, owner_id } = req.body;
-        const requester_id = req.user.userId || req.user.id;
+        const { patient_id, owner_id, requester_id: body_requester_id, encrypted_key, status: body_status } = req.body;
+        // Determine the actual requester: body may pass requester_id when user grants access to admin
+        const requester_id = body_requester_id || req.user.userId || req.user.id;
+        const actual_owner_id = owner_id || req.user.userId || req.user.id;
 
-        if (!owner_id) {
+        if (!actual_owner_id) {
             return res.status(400).json({ success: false, error: 'Owner ID is required' });
         }
 
-        // Check if a request already exists
+        // Check if a request already exists between same owner & requester
         const { data: existing } = await db.from('access_requests')
             .select('id, status')
-            .eq('patient_id', patient_id)
+            .eq('owner_id', actual_owner_id)
             .eq('requester_id', requester_id)
+            .is('patient_id', patient_id || null)
             .maybeSingle();
 
         if (existing) {
+            // Update it if a new encrypted_key was provided
+            if (encrypted_key) {
+                await db.from('access_requests')
+                    .update({ encrypted_key, status: body_status || existing.status, approved_at: new Date().toISOString() })
+                    .eq('id', existing.id);
+            }
             return res.json({ success: true, message: 'Request already exists', status: existing.status });
         }
 
-        const { data, error } = await db.from('access_requests').insert({
-            patient_id,
+        const insertPayload = {
+            patient_id: patient_id || null,
             requester_id,
-            owner_id,
-            status: 'pending'
-        }).select().single();
+            owner_id: actual_owner_id,
+            status: body_status === 'granted' ? 'approved' : 'pending',
+        };
+
+        if (encrypted_key) {
+            insertPayload.encrypted_key = encrypted_key;
+            insertPayload.approved_at = new Date().toISOString();
+        }
+
+        const { data, error } = await db.from('access_requests').insert(insertPayload).select().single();
 
         if (error) throw error;
 
@@ -103,7 +119,7 @@ router.get('/pending', authenticateToken, async (req, res) => {
         const { data, error } = await db.from('access_requests')
             .select(`
                 *,
-                requester:requester_id(full_name, email),
+                requester:requester_id(full_name, email, public_key),
                 patient:patient_id(full_name, patient_code)
             `)
             .eq('owner_id', owner_id)
@@ -216,6 +232,30 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     } catch (err) {
         console.error('❌ [ActiveSupport] Fetch error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to fetch assigned support patients' });
+    }
+});
+
+/**
+ * 🔔 GET ALL PENDING DATA SHARING REQUESTS FOR ADMIN
+ * Admin can see all users who have requested data sharing (pending status).
+ */
+router.get('/pending-admin', authenticateToken, async (req, res) => {
+    try {
+        const { data, error } = await db.from('access_requests')
+            .select(`
+                *,
+                owner:owner_id(id, full_name, email),
+                patient:patient_id(id, full_name, patient_code)
+            `)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        res.json({ success: true, requests: data || [] });
+    } catch (err) {
+        console.error('❌ [PendingAdmin] Fetch error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch pending data sharing requests' });
     }
 });
 
