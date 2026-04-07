@@ -10,15 +10,22 @@ const router = express.Router();
  */
 async function resolvePatientId(identifier) {
     if (!identifier) return null;
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
-    const isNumeric = /^\d+$/.test(identifier);
-
-    if (isUUID || isNumeric) return identifier;
-
-    // Must be a patient_code ("PAT...")
+    
     const db = supabaseAdmin || supabase;
-    const { data } = await db.from('patients').select('id').eq('patient_code', identifier).maybeSingle();
-    return data ? data.id : null;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    
+    // 1. If it's a UUID, it's likely already the primary key
+    if (isUUID) return identifier;
+
+    // 2. Try to find patient by patient_code (MR number like '172' or 'PAT-...')
+    const { data: byCode } = await db.from('patients').select('id').eq('patient_code', identifier).maybeSingle();
+    if (byCode) return byCode.id;
+
+    // 3. Fallback: If it's numeric and wasn't found as a code, it might be a BIGINT primary key (legacy)
+    const isNumeric = /^\d+$/.test(identifier);
+    if (isNumeric) return identifier;
+
+    return null;
 }
 
 /**
