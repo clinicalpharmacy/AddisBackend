@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -15,7 +15,7 @@ router.get('/security-users', authenticateToken, async (req, res) => {
         const { data: users, error } = await db
             .from('users')
             .select('id, full_name, email, public_key')
-            .eq('role', 'admin');
+            .in('role', ['admin', 'superadmin']);
 
         if (error) throw error;
         res.json({ success: true, users: users || [] });
