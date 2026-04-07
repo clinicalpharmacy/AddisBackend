@@ -14,16 +14,15 @@ async function resolvePatientId(identifier) {
     const db = supabaseAdmin || supabase;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
     
-    // 1. If it's a UUID, it's likely already the primary key
+    // prioritze checking if it's already a valid primary ID (UUID or numeric)
     if (isUUID) return identifier;
 
-    // 2. Try to find patient by patient_code (MR number like '172' or 'PAT-...')
-    const { data: byCode } = await db.from('patients').select('id').eq('patient_code', identifier).maybeSingle();
+    // 1. Try to resolve as a code (MR number like '172') using Admin client to bypass RLS for resolution
+    const { data: byCode } = await (supabaseAdmin || supabase).from('patients').select('id').eq('patient_code', identifier).maybeSingle();
     if (byCode) return byCode.id;
 
-    // 3. Fallback: If it's numeric and wasn't found as a code, it might be a BIGINT primary key (legacy)
-    const isNumeric = /^\d+$/.test(identifier);
-    if (isNumeric) return identifier;
+    // 2. FALLBACK: If it's numeric, it might be a legacy numeric ID
+    if (/^\d+$/.test(identifier)) return identifier;
 
     return null;
 }
@@ -31,7 +30,6 @@ async function resolvePatientId(identifier) {
 /**
  * 🛡️ Robust Clinical Access Check
  * Verifies if a user has permission to see a specific patient's clinical data.
- * Checks ownership, company membership, admin status, and approved access requests.
  */
 async function verifyClinicalAccess(patientId, req) {
     const userId = req.user.userId;
@@ -39,33 +37,42 @@ async function verifyClinicalAccess(patientId, req) {
     const userCompanyId = req.user.company_id;
     const userAccountType = req.user.account_type;
 
-    // 1. Admin/Superadmin bypass
     if (userRole === 'admin' || userRole === 'superadmin') return true;
 
     const db = supabaseAdmin || supabase;
 
-    // 2. Resolve Patient Owner
-    const { data: patient, error: patientError } = await db.from('patients').select('id, user_id').eq('id', patientId).maybeSingle();
-    if (patientError || !patient) return false;
+    // Safety: If patientId is not a UUID and not numeric, it's definitely invalid for the 'id' column
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
+    const isNumeric = /^\d+$/.test(patientId);
+    if (!isUUID && !isNumeric) return false;
 
-    // 3. Simple Ownership
-    if (patient.user_id === userId) return true;
+    try {
+        // Resolve Patient Owner
+        const { data: patient, error: patientError } = await db.from('patients').select('id, user_id').eq('id', patientId).maybeSingle();
+        if (patientError || !patient) return false;
 
-    // 4. Company Access
-    const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-    if (accessibleUserIds && accessibleUserIds.includes(patient.user_id)) return true;
+        // 1. Simple Ownership
+        if (patient.user_id === userId) return true;
 
-    // 5. Approved Access Request (Zero-Knowledge Support)
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: access } = await db.from('access_requests')
-        .select('id')
-        .eq('patient_id', patientId)
-        .eq('requester_id', userId)
-        .eq('status', 'approved')
-        .gt('approved_at', twentyFourHoursAgo)
-        .maybeSingle();
+        // 2. Company Access
+        const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
+        if (accessibleUserIds && accessibleUserIds.includes(patient.user_id)) return true;
 
-    return !!access;
+        // 3. Approved Access Request
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: access } = await db.from('access_requests')
+            .select('id')
+            .eq('patient_id', patientId)
+            .eq('requester_id', userId)
+            .eq('status', 'approved')
+            .gt('approved_at', twentyFourHoursAgo)
+            .maybeSingle();
+
+        return !!access;
+    } catch (e) {
+        console.error('Access check failed:', e);
+        return false;
+    }
 }
 
 // ARN Assessments
