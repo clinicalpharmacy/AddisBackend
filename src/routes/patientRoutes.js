@@ -189,73 +189,6 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
     }
 });
 
-// Legacy Get by code - Now points to ID search
-router.get('/code/:patientCode', authenticateToken, async (req, res) => {
-    try {
-        const patientCode = req.params.patientCode;
-        const userId = req.user.userId;
-        const userRole = req.user.role;
-        const userCompanyId = req.user.company_id;
-        const userAccountType = req.user.account_type || 'individual';
-        const db = supabaseAdmin || supabase;
-        
-        // Fix: Determine if we should search by 'id' (bigint/uuid) or 'patient_code' (string)
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientCode);
-        const isNumeric = /^\d+$/.test(patientCode);
-        const isIdSearch = isUUID || isNumeric;
-
-        let query = db.from('patients').select('*');
-        
-        if (isIdSearch) {
-            query = query.eq('id', patientCode);
-        } else {
-            // If it's a "PAT..." string, search by the patient_code column instead of id
-            query = query.eq('patient_code', patientCode);
-        }
-
-        const { data, error } = await query.maybeSingle();
-
-        if (error) throw error;
-        if (!data) return res.status(404).json({ success: false, error: 'Patient not found' });
-
-        // Access check
-        if (userRole !== 'admin') {
-            const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
-            if (!accessibleUserIds.includes(data.user_id)) {
-                // Check if granted access via access_requests
-                const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-                const { data: access } = await db.from('access_requests')
-                    .select('id')
-                    .eq('patient_id', data.id)
-                    .eq('requester_id', userId)
-                    .eq('status', 'approved')
-                    .gt('approved_at', twentyFourHoursAgo)
-                    .maybeSingle();
-
-                if (!access) {
-                    return res.status(403).json({ success: false, error: 'Access denied' });
-                }
-            }
-        }
-
-        // Access check already handled by query.in('user_id', accessibleUserIds)
-        
-        // Role-based filtering and name sanitization for individuals (if NOT the owner)
-        if (userAccountType === 'individual' && userRole !== 'admin' && data.user_id !== userId) {
-            const { patient_code, ...rest } = data;
-            const processed = { ...rest };
-            if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
-                processed.full_name = 'MR profile';
-            }
-            return res.json({ success: true, patient: processed });
-        }
-
-        res.json({ success: true, patient: data });
-
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message || 'Failed' });
-    }
-});
 
 // Get by identifier (ID or Code) - MUST come LAST among GET routes
 router.get('/:identifier', authenticateToken, async (req, res) => {
@@ -276,15 +209,11 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const db = supabaseAdmin || supabase;
         let query = db.from('patients').select('*');
 
-        if (isNumeric || isUUID) {
-            query = query.eq('id', identifier);
-        } else {
-            // Fallback for legacy PAT codes or other alphanumeric identifiers
-            // This avoids the BIGINT crash by searching the string column instead
-            query = query.eq('patient_code', identifier);
+        if (!isNumeric && !isUUID) {
+            return res.status(404).json({ success: false, error: 'Patient not found' });
         }
 
-        const { data, error } = await query.maybeSingle();
+        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
@@ -539,16 +468,9 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
 
         const db = supabaseAdmin || supabase;
-        // Support search by code (REMOVED: patient_code does not exist)
-        // Redirecting to ID lookup if it looks like one
-        const isIdSearch = patientCode.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(patientCode);
         if (!isIdSearch) return res.status(400).json({ error: 'Valid ID required' });
 
-        const { data: existing, error: fetchError } = await db
-            .from('patients')
-            .select('*')
-            .eq('id', patientCode)
-            .maybeSingle();
+        const { data: existing, error: fetchError } = await db.from('patients').select('*').eq('id', patientCode).maybeSingle();
 
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });

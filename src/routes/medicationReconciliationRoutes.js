@@ -23,7 +23,7 @@ router.get('/:patientCode', authenticateToken, async (req, res) => {
         } else if (isNumeric) {
             pQuery = pQuery.eq('id', parseInt(patientCode)); // Numeric ID lookup
         } else {
-            pQuery = pQuery.eq('patient_code', patientCode); // PAT-XXX lookup
+            return res.json({ success: true, reconciliations: [], count: 0 }); // Invalid format
         }
 
         const { data: patient } = await pQuery.maybeSingle();
@@ -71,7 +71,7 @@ router.get('/stats/:patientCode', authenticateToken, async (req, res) => {
         } else if (isNumeric) {
             pQuery = pQuery.eq('id', parseInt(patientCode));
         } else {
-            pQuery = pQuery.eq('patient_code', patientCode);
+            return res.json({ success: true, stats: { total: 0 } });
         }
 
         const { data: patient } = await pQuery.maybeSingle();
@@ -136,7 +136,6 @@ router.post('/', authenticateToken, async (req, res) => {
                 error: 'Patient ID is required'
             });
         }
-        delete reconciliationData.patient_code;
 
         if (!reconciliationData.medication_name) {
             return res.status(400).json({
@@ -191,7 +190,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
         delete updateData.id;
         delete updateData.created_at;
         delete updateData.created_by;
-        delete updateData.patient_code; // Don't allow changing patient
 
         const { data, error } = await supabase
             .from('medication_reconciliations')

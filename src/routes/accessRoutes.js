@@ -275,7 +275,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
         const ownerIds = [...new Set(records.map(r => r.owner_id).filter(Boolean))];
 
         const [patientsRes, ownersRes] = await Promise.all([
-            patientIds.length > 0 ? db.from('patients').select('id, full_name, patient_code').in('id', patientIds) : { data: [] },
+            patientIds.length > 0 ? db.from('patients').select('id, full_name').in('id', patientIds) : { data: [] },
             ownerIds.length > 0 ? db.from('users').select('id, full_name, email').in('id', ownerIds) : { data: [] }
         ]);
 
@@ -314,7 +314,7 @@ router.get('/pending-admin', authenticateToken, async (req, res) => {
         const hydrated = await Promise.all(records.map(async (row) => {
             const { data: owner } = await db.from('users').select('id, full_name, email').eq('id', row.owner_id).maybeSingle();
             const { data: patient } = row.patient_id 
-                ? await db.from('patients').select('id, full_name, patient_code').eq('id', row.patient_id).maybeSingle()
+                ? await db.from('patients').select('id, full_name').eq('id', row.patient_id).maybeSingle()
                 : { data: null };
             return { ...row, owner, patient };
         }));

@@ -71,10 +71,9 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
         const userIds = allUsers.map(u => u.id);
 
         // Fetch performance data for each metric
-        // 1. First, fetch all patients created by these users to get their ids and patient_codes
         const { data: userPatients, error: patientsError } = await supabase
             .from('patients')
-            .select('id, user_id, created_at, patient_code')
+            .select('id, user_id, created_at')
             .in('user_id', userIds);
 
         if (patientsError) throw patientsError;
@@ -90,9 +89,8 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
 
         if (allPatientIds.length > 0) {
             const idList = allPatientIds.join(',');
-            const codeList = allPatientCodes.length > 0 ? allPatientCodes.join(',') : null;
             
-            // Build filter string for OR (patient_id or patient_code)
+            // Build filter string for OR
             const getFilter = () => {
                 return `patient_id.in.(${idList})`;
             };
@@ -136,32 +134,31 @@ router.get('/company-performance', authenticateToken, async (req, res) => {
 
             // Count patients for this user
             const userPatientsSubset = patientsData.data?.filter(p => p.user_id === userId) || [];
-            const patientCodes = userPatientsSubset.map(p => p.patient_code);
             const patientIds = userPatientsSubset.map(p => p.id);
 
             // Count medications for this user's patients
             const userMedications = medicationsData.data?.filter(m =>
-                (m.patient_id && patientIds.includes(m.patient_id)) || (m.patient_code && patientCodes.includes(m.patient_code))
+                (m.patient_id && patientIds.includes(m.patient_id))
             ) || [];
  
             // Count assessments
             const userAssessments = assessmentsData.data?.filter(a =>
-                (a.patient_id && patientIds.includes(a.patient_id)) || (a.patient_code && patientCodes.includes(a.patient_code))
+                (a.patient_id && patientIds.includes(a.patient_id))
             ) || [];
  
             // Count plans
             const userPlans = plansData.data?.filter(p =>
-                (p.patient_id && patientIds.includes(p.patient_id)) || (p.patient_code && patientCodes.includes(p.patient_code))
+                (p.patient_id && patientIds.includes(p.patient_id))
             ) || [];
  
             // Count outcomes
             const userOutcomes = outcomesData.data?.filter(o =>
-                (o.patient_id && patientIds.includes(o.patient_id)) || (o.patient_code && patientCodes.includes(o.patient_code))
+                (o.patient_id && patientIds.includes(o.patient_id))
             ) || [];
  
             // Calculate total costs managed
             const userCosts = costsData.data?.filter(c =>
-                (c.patient_id && patientIds.includes(c.patient_id)) || (c.patient_code && patientCodes.includes(c.patient_code))
+                (c.patient_id && patientIds.includes(c.patient_id))
             ) || [];
             const totalCostManaged = userCosts.reduce((sum, c) =>
                 sum + (parseFloat(c.total_costs) || 0) + (parseFloat(c.cost_savings) || 0), 0);
@@ -311,22 +308,18 @@ router.get('/user-performance/:userId', authenticateToken, async (req, res) => {
             .eq('user_id', targetUserId)
             .order('created_at', { ascending: false });
 
-        const patientCodes = patients?.filter(p => p.patient_code).map(p => p.patient_code) || [];
         const patientIds = patients?.map(p => p.id) || [];
 
         const idList = patientIds.join(',');
-        const codeList = patientCodes.length > 0 ? patientCodes.join(',') : null;
         
-        const getFilter = (codeList) => {
-            if (codeList) return `patient_id.in.(${idList}),patient_code.in.(${codeList})`;
+        const getFilter = () => {
             return `patient_id.in.(${idList})`;
         };
 
-        const orFilter = getFilter(codeList);
-        const medicationFilter = codeList ? `patient_code.in.(${codeList})` : null;
+        const orFilter = getFilter();
 
         const [medications, assessments, plans, outcomes] = await Promise.all([
-            medicationFilter ? supabase.from('medication_history').select('*').or(medicationFilter) : Promise.resolve({ data: [] }),
+            supabase.from('medication_history').select('*').or(orFilter),
             supabase.from('drn_assessments').select('*').or(orFilter),
             supabase.from('pharmacy_assistance_plans').select('*').or(orFilter),
             supabase.from('patient_outcomes').select('*').or(orFilter)
