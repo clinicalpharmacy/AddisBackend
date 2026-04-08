@@ -128,7 +128,7 @@ router.get('/', authenticateToken, async (req, res) => {
         }
 
         if (!patients || patients.length === 0) {
-            console.warn(`⚠️ [List Fetch] Zero results found for User: ${userId} (Role: ${userRole}). Active IDs: ${quotedAccessibleIds}`);
+            console.warn(`⚠️ [List Fetch] Zero results found for User: ${userId} (Role: ${userRole}). Active IDs: ${JSON.stringify(activeIds)}`);
         }
 
         // Attach shared encryption keys where applicable (for support staff decryption)
@@ -149,7 +149,7 @@ router.get('/', authenticateToken, async (req, res) => {
                 role: userRole, 
                 combined: true,
                 debug_userId: userId,
-                active_ids: activeUserIds
+                active_ids: validActiveIds
             }
         });
     } catch (error) {
