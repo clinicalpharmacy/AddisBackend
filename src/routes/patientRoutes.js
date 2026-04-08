@@ -256,27 +256,31 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
 
         if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
 
-        let query = supabase.from('patients').select('*');
-
-        console.log(`🔍 [DEBUG] Fetching patient by identifier: "${identifier}"`);
-        // Determine if identifier is UUID, Numeric, or HCC-style string
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
         const isNumeric = /^\d+$/.test(identifier);
-        const isHCC = /^HCC-/i.test(identifier);
-        const isIdSearch = isUUID || isNumeric || isHCC;
-
-        console.log(`🔍 [DEBUG] Identifier type: ${isUUID ? 'UUID' : (isNumeric ? 'Numeric ID' : (isHCC ? 'HCC ID' : 'Code'))}`);
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
 
         const db = supabaseAdmin || supabase;
-        if (!isIdSearch && !identifier.startsWith('PAT')) {
-             return res.status(400).json({ success: false, error: 'Invalid patient identifier format' });
-        }
+        let query = db.from('patients').select('*');
         
-        // Search by primary ID (UUID, Numeric, or HCC string)
-        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
+        if (isNumeric || isUUID) {
+            query = query.eq('id', identifier);
+        } else {
+            // It's a string code (PAT... or HCC...)
+            query = query.eq('patient_code', identifier);
+        }
+
+        const { data, error } = await query.maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
+            // If we got a type error despite our check, try the other column as a last resort
+            if (error.message.includes('invalid input syntax for type bigint')) {
+                const { data: retryData, error: retryError } = await db.from('patients').select('*').eq('patient_code', identifier).maybeSingle();
+                if (retryError) throw retryError;
+                if (!retryData) return res.status(404).json({ success: false, error: 'Patient not found' });
+                // If retry worked, use it
+                return res.json({ success: true, patient: retryData });
+            }
             throw error;
         }
 

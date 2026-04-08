@@ -210,19 +210,36 @@ router.get('/granted', authenticateToken, async (req, res) => {
         const { patient_id } = req.query;
         const requester_id = req.user.userId || req.user.id;
 
-        if (!patient_id) return res.status(400).json({ success: false, error: 'Patient ID is required' });
-
+        // 🛠️ SMART IDENTIFIER ROUTING
+        const isNumeric = /^\d+$/.test(patient_id);
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
+        
         // 1. Identify which user owns this patient (to support Global Grants)
-        const { data: patient } = await db.from('patients').select('user_id').eq('id', patient_id).maybeSingle();
-        const owner_id = patient?.user_id;
+        let owner_id = null;
+        let actual_patient_uuid = null;
+
+        const patientQuery = db.from('patients').select('id, user_id');
+        if (isNumeric || isUUID) {
+            patientQuery.eq('id', patient_id);
+        } else {
+            patientQuery.eq('patient_code', patient_id);
+        }
+        
+        const { data: patient } = await patientQuery.maybeSingle();
+        owner_id = patient?.user_id;
+        actual_patient_uuid = patient?.id;
+
+        if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
+
 
         // 2. Query for a Specific Grant for this patient OR a Global Grant for this User
         // We prioritize Specific grants by sorting NULL values (for global) to the end.
+        // 2. Query for a Specific Grant for this patient OR a Global Grant for this User
         const { data, error } = await db.from('access_requests')
             .select('*')
             .eq('requester_id', requester_id)
             .eq('status', 'approved')
-            .or(`patient_id.eq.${patient_id},and(patient_id.is.null,owner_id.eq.${owner_id})`)
+            .or(`patient_id.eq.${actual_patient_uuid || -1},and(patient_id.is.null,owner_id.eq.${owner_id})`)
             .order('patient_id', { ascending: false, nullsFirst: false })
             .limit(1);
 
@@ -243,7 +260,7 @@ router.get('/active-support', authenticateToken, async (req, res) => {
     try {
         const admin_id = req.user.userId || req.user.id;
 
-        // 1. Fetch authorized records (Treat both 'approved' and 'pending' as authorized for instant access)
+        // 1. Fetch authorized records
         const { data: records, error } = await db.from('access_requests')
             .select('*')
             .eq('requester_id', admin_id)
@@ -252,11 +269,22 @@ router.get('/active-support', authenticateToken, async (req, res) => {
         if (error) throw error;
         if (!records || records.length === 0) return res.json({ success: true, support_patients: [] });
 
-        // 2. Hydrate records with patient/owner metadata manually (Robust Join)
-        const hydrated = await Promise.all(records.map(async (row) => {
-            const { data: patient } = await db.from('patients').select('id, full_name, patient_code').eq('id', row.patient_id).maybeSingle();
-            const { data: owner } = await db.from('users').select('full_name, email').eq('id', row.owner_id).maybeSingle();
-            return { ...row, patient, owner };
+        // 2. Optimized Hydration (Bulk Fetch)
+        const patientIds = [...new Set(records.map(r => r.patient_id).filter(Boolean))];
+        const ownerIds = [...new Set(records.map(r => r.owner_id).filter(Boolean))];
+
+        const [patientsRes, ownersRes] = await Promise.all([
+            patientIds.length > 0 ? db.from('patients').select('id, full_name, patient_code').in('id', patientIds) : { data: [] },
+            ownerIds.length > 0 ? db.from('users').select('id, full_name, email').in('id', ownerIds) : { data: [] }
+        ]);
+
+        const patientsMap = (patientsRes.data || []).reduce((acc, p) => ({ ...acc, [p.id]: p }), {});
+        const ownersMap = (ownersRes.data || []).reduce((acc, o) => ({ ...acc, [o.id]: o }), {});
+
+        const hydrated = records.map(row => ({
+            ...row,
+            patient: patientsMap[row.patient_id] || null,
+            owner: ownersMap[row.owner_id] || null
         }));
 
         res.json({ success: true, support_patients: hydrated });
