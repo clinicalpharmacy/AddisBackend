@@ -274,11 +274,17 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         // 🛠️ SMART IDENTIFIER ROUTING
         // postgres bigint columns crash if you compare them to a string like 'HCC-...'
         const db = supabaseAdmin || supabase;
-        if (!isNumeric && !isUUID) {
-            return res.status(400).json({ success: false, error: 'User identifier must be a valid UUID or character ID.' });
+        let query = db.from('patients').select('*');
+
+        if (isNumeric || isUUID) {
+            query = query.eq('id', identifier);
+        } else {
+            // Fallback for legacy PAT codes or other alphanumeric identifiers
+            // This avoids the BIGINT crash by searching the string column instead
+            query = query.eq('patient_code', identifier);
         }
 
-        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
+        const { data, error } = await query.maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
