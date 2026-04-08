@@ -125,7 +125,7 @@ router.get('/pending', authenticateToken, async (req, res) => {
             .select(`
                 *,
                 requester:requester_id(full_name, email, public_key),
-                patient:patient_id(full_name, patient_code)
+                patient:patient_id(full_name)
             `)
             .eq('owner_id', owner_id)
             .eq('status', 'pending');
@@ -222,7 +222,8 @@ router.get('/granted', authenticateToken, async (req, res) => {
         if (isNumeric || isUUID) {
             patientQuery.eq('id', patient_id);
         } else {
-            patientQuery.eq('patient_code', patient_id);
+            // Identifier is a string but not UUID/Numeric - return not found since patient_code is removed
+            return res.status(404).json({ success: false, error: 'Patient not found' });
         }
         
         const { data: patient } = await patientQuery.maybeSingle();

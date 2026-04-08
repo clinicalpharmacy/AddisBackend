@@ -17,9 +17,12 @@ async function resolvePatientId(identifier) {
     // prioritze checking if it's already a valid primary ID (UUID or numeric)
     if (isUUID) return identifier;
 
-    // 1. Try to resolve as a code (MR number like '172') using Admin client to bypass RLS for resolution
-    const { data: byCode } = await (supabaseAdmin || supabase).from('patients').select('id').eq('patient_code', identifier).maybeSingle();
-    if (byCode) return byCode.id;
+    // 1. Try to resolve as a direct numeric ID or UUID
+    const isNumeric = /^\d+$/.test(identifier);
+    if (isNumeric) return identifier;
+
+    // (Lookup logic for MR number would go here if it used a different column name)
+
 
     // 2. FALLBACK: If it's numeric, it might be a legacy numeric ID
     if (/^\d+$/.test(identifier)) return identifier;
@@ -598,16 +601,9 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         // Now that patient_id is added, we allow it to be updated or persisted
         // delete updates.patient_id; 
         
-        // Resolve patient context
-        const isUUID = updates.patient_code && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.patient_code);
-        const isNumeric = updates.patient_code && /^\d+$/.test(updates.patient_code);
-        const isIdSearch = (updates.patient_code && (isUUID || isNumeric)) || (updates.patient_id);
-
-        if (updates.patient_code && (isUUID || isNumeric)) {
-            const { data: patient } = await db.from('patients').select('patient_code').eq('id', updates.patient_code).maybeSingle();
-            if (patient && patient.patient_code) {
-                updates.patient_code = patient.patient_code;
-            }
+        // Resolve patient context (Code lookups removed as patient_code does not exist)
+        if (updates.patient_id) {
+            // Patient ID already provided
         }
 
         const { data, error } = await (supabaseAdmin || supabase).from('medication_history').update(updates).eq('id', id).select().single();

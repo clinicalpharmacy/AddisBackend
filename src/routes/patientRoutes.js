@@ -102,9 +102,17 @@ router.get('/', authenticateToken, async (req, res) => {
         const activeIds = [...new Set([...(accessibleUserIds || []), userId, userEmail])];
         
         // Build OR conditions explicitly to avoid PostgREST type mismatch errors
-        // Example: user_id.eq.UUID,user_id.eq.Email,id.in.(SharedIDs)
-        let ownerConditions = activeIds.map(id => `user_id.eq.${id}`).join(',');
-        let sharedCondition = approvedPatientIds.length > 0 ? `,id.in.(${approvedPatientIds.join(',')})` : '';
+        // 🛡️ ONLY include IDs that match UUID or Numeric format to prevent casting errors
+        const validActiveIds = activeIds.filter(id => 
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || /^\d+$/.test(id)
+        );
+        
+        if (validActiveIds.length === 0) {
+            return res.json({ success: true, patients: [], message: "No valid user IDs identified for access check" });
+        }
+
+        let ownerConditions = validActiveIds.map(id => `user_id.eq.${id}`).join(',');
+        let sharedCondition = (approvedPatientIds.length > 0) ? `,id.in.(${approvedPatientIds.join(',')})` : '';
         
         query = query.or(`${ownerConditions}${sharedCondition}`);
         
@@ -185,6 +193,10 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
 router.get('/code/:patientCode', authenticateToken, async (req, res) => {
     try {
         const patientCode = req.params.patientCode;
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+        const userCompanyId = req.user.company_id;
+        const userAccountType = req.user.account_type || 'individual';
         const db = supabaseAdmin || supabase;
         
         // Fix: Determine if we should search by 'id' (bigint/uuid) or 'patient_code' (string)
@@ -259,33 +271,21 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(identifier);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
 
+        // 🛠️ SMART IDENTIFIER ROUTING
+        // postgres bigint columns crash if you compare them to a string like 'HCC-...'
         const db = supabaseAdmin || supabase;
-        let query = db.from('patients').select('*');
-        
-        if (isNumeric || isUUID) {
-            query = query.eq('id', identifier);
-        } else {
-            // It's a string code (PAT... or HCC...)
-            query = query.eq('patient_code', identifier);
+        if (!isNumeric && !isUUID) {
+            return res.status(400).json({ success: false, error: 'User identifier must be a valid UUID or character ID.' });
         }
 
-        const { data, error } = await query.maybeSingle();
+        const { data, error } = await db.from('patients').select('*').eq('id', identifier).maybeSingle();
 
         if (error) {
             console.error('❌ [DATABASE] Fetch error:', error.message);
-            // If we got a type error despite our check, try the other column as a last resort
-            if (error.message.includes('invalid input syntax for type bigint')) {
-                const { data: retryData, error: retryError } = await db.from('patients').select('*').eq('patient_code', identifier).maybeSingle();
-                if (retryError) throw retryError;
-                if (!retryData) return res.status(404).json({ success: false, error: 'Patient not found' });
-                // If retry worked, use it
-                return res.json({ success: true, patient: retryData });
-            }
             throw error;
         }
 
         if (!data) {
-            console.warn(`⚠️ [NOT FOUND] Patient "${identifier}" not found in DB`);
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
 
@@ -490,7 +490,7 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         const isIdSearch = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(identifier);
 
         const db = supabaseAdmin || supabase;
-        const { data: existing, error: fetchError } = await db.from('patients').select('id, user_id').eq(isIdSearch ? 'id' : 'id', identifier).maybeSingle();
+        const { data: existing, error: fetchError } = await db.from('patients').select('id, user_id').eq('id', identifier).maybeSingle();
         if (fetchError) throw fetchError;
         if (!existing) return res.status(404).json({ success: false, error: 'Patient not found' });
 
@@ -533,10 +533,15 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
 
         const db = supabaseAdmin || supabase;
+        // Support search by code (REMOVED: patient_code does not exist)
+        // Redirecting to ID lookup if it looks like one
+        const isIdSearch = patientCode.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(patientCode);
+        if (!isIdSearch) return res.status(400).json({ error: 'Valid ID required' });
+
         const { data: existing, error: fetchError } = await db
             .from('patients')
             .select('*')
-            .eq('patient_code', patientCode)
+            .eq('id', patientCode)
             .maybeSingle();
 
         if (fetchError) throw fetchError;
