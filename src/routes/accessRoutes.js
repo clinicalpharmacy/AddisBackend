@@ -83,6 +83,18 @@ router.post('/support-activate', authenticateToken, async (req, res) => {
                 console.warn(`⚠️ [Support] Invalid ID format for patient_id: ${patient_id}`);
                 return res.status(400).json({ success: false, error: 'Valid Patient ID (UUID or Numeric) is required.' });
             }
+
+            // 🔒 SECURITY CHECK: Ensure the caller actually owns this patient
+            const { data: patient, error: pError } = await db.from('patients').select('user_id').eq('id', patient_id).maybeSingle();
+            if (pError) throw pError;
+            if (patient && patient.user_id !== owner_id) {
+                return res.status(403).json({ success: false, error: 'Unauthorized: Only the record owner can activate support.' });
+            }
+        }
+
+        // 🛡️ ROLE CHECK: Admin role is restricted from initiating support activation (as per policy)
+        if (req.user.role === 'admin') {
+            return res.status(403).json({ success: false, error: 'Admins cannot initiate support activation sessions.' });
         }
 
         // Create or update access record with 'approved' status

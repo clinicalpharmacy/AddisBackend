@@ -249,14 +249,27 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const { data: userData } = await db.from('users').select('encryption_salt').eq('id', data.user_id).maybeSingle();
         const ownerSalt = userData?.encryption_salt || null;
 
-        // Legacy removal - already using UUID
-        if (data) {
-            // Already clean due to select
-        }
+        // 🛡️ [NEW] Check for granted access requests for this specific requester
+        // This allows admins/specialists to get the shared_encryption_key in a single hop
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: accessGrant } = await db.from('access_requests')
+            .select('encrypted_key')
+            .eq('patient_id', data.id)
+            .eq('requester_id', userId)
+            .eq('status', 'approved')
+            .gt('approved_at', twentyFourHoursAgo)
+            .maybeSingle();
+
+        // Attach the shared key if found
+        const enrichedPatient = {
+            ...data,
+            shared_encryption_key: accessGrant?.encrypted_key || null,
+            _is_shared: !!accessGrant
+        };
         
         res.json({ 
             success: true, 
-            patient: data,
+            patient: enrichedPatient,
             owner_salt: ownerSalt 
         });
 
