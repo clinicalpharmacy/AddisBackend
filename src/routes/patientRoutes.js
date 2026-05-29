@@ -38,10 +38,10 @@ router.get('/count', authenticateToken, async (req, res) => {
         } 
         else if (userAccountType === 'individual') {
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
-                limit = 5; // Set to 5 as requested
+                limit = 5;
                 limitMessage = 'Pharmacists and pharmacy students can manage up to 5 MRs.';
             } else {
-                limit = 5; // Increased from 1 to 5
+                limit = 5;
                 limitMessage = 'Individual users are limited to 5 MRs. Upgrade to Company subscription for unlimited access.';
             }
         }
@@ -79,14 +79,8 @@ router.get('/', authenticateToken, async (req, res) => {
         const db = supabaseAdmin || supabase;
         let query = db.from('patients').select('*');
 
-        // 🔐 UNIFIED ACCESS QUERY:
-        // Users see:
-        // 1. Patients they created or own (based on accessibleUserIds / company logic)
-        // 2. Patients shared with them via approved access_requests (if within 24h)
-        
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         
-        // Fetch approved access requests for this specific user
         const { data: approvedRequests } = await db
             .from('access_requests')
             .select('patient_id, encrypted_key')
@@ -96,13 +90,9 @@ router.get('/', authenticateToken, async (req, res) => {
 
         const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
         
-        // Build the combined filter
-        // 🔐 INCLUSIVE DATA RETRIEVAL (UUID + Email + Company)
         const userEmail = req.user.email;
         const activeIds = [...new Set([...(accessibleUserIds || []), userId, userEmail])];
         
-        // Build OR conditions explicitly to avoid PostgREST type mismatch errors
-        // 🛡️ ONLY include IDs that match UUID or Numeric format to prevent casting errors
         const validActiveIds = activeIds.filter(id => 
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || /^\d+$/.test(id)
         );
@@ -121,7 +111,6 @@ router.get('/', authenticateToken, async (req, res) => {
         if (fetchError) {
             console.error('❌ [DATABASE] Patient retrieval failed. Query attempted for:', activeIds);
             console.error('DATABASE ERROR:', fetchError.message);
-            // Fallback: try with only the UUID if the mixed-type query failed (to avoid 500 error)
             const { data: fallbackPatients, error: fallbackError } = await db.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
             if (!fallbackError) return res.json({ success: true, patients: fallbackPatients || [], message: "Fallback results shown due to type mismatch" });
             throw fetchError;
@@ -131,7 +120,6 @@ router.get('/', authenticateToken, async (req, res) => {
             console.warn(`⚠️ [List Fetch] Zero results found for User: ${userId} (Role: ${userRole}). Active IDs: ${JSON.stringify(activeIds)}`);
         }
 
-        // Attach shared encryption keys where applicable (for support staff decryption)
         const sanitizedPatients = (patients || []).map(p => {
             const request = approvedRequests?.find(r => r.patient_id === p.id);
             return { 
@@ -167,14 +155,11 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         const { data: patients, error } = await supabase.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
         if (error) throw error;
 
-        // Filter out patient_code and sanitize name for individuals
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
-        // Sanitize patient responses ONLY if they are not the owner
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
             
-            // Only redact if user is individual AND not the owner/admin
             if (userAccountType === 'individual' && userRole !== 'admin' && p.user_id !== userId) {
                 if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
                     processedPatient.full_name = 'MR profile';
@@ -188,7 +173,6 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed' });
     }
 });
-
 
 // Get by identifier (ID or Code) - MUST come LAST among GET routes
 router.get('/:identifier', authenticateToken, async (req, res) => {
@@ -204,10 +188,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
         const isNumeric = /^\d+$/.test(identifier);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
 
-        // 🛠️ SMART IDENTIFIER ROUTING
-        // postgres bigint columns crash if you compare them to a string like 'HCC-...'
         const db = supabaseAdmin || supabase;
-        let query = db.from('patients').select('*');
 
         if (!isNumeric && !isUUID) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
@@ -224,11 +205,9 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
 
-        // Apply access control manually since we are using admin client
         if (userRole !== 'admin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
             if (!accessibleUserIds.includes(data.user_id)) {
-                // Check if granted access via access_requests
                 const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
                 const { data: access } = await db.from('access_requests')
                     .select('id')
@@ -245,12 +224,9 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             }
         }
 
-        // 🔐 ZERO-KNOWLEDGE: Include the owner's salt so the record can be unlocked (by owner or admin)
         const { data: userData } = await db.from('users').select('encryption_salt').eq('id', data.user_id).maybeSingle();
         const ownerSalt = userData?.encryption_salt || null;
 
-        // 🛡️ [NEW] Check for granted access requests for this specific requester
-        // This allows admins/specialists to get the shared_encryption_key in a single hop
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const { data: accessGrant } = await db.from('access_requests')
             .select('encrypted_key')
@@ -260,7 +236,6 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             .gt('approved_at', twentyFourHoursAgo)
             .maybeSingle();
 
-        // Attach the shared key if found
         const enrichedPatient = {
             ...data,
             shared_encryption_key: accessGrant?.encrypted_key || null,
@@ -290,17 +265,14 @@ router.post('/', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
         const patientData = req.body;
 
-        // Check if user is individual (not company and not admin)
         const isIndividual = userAccountType === 'individual' && !req.user.company_id;
         
-        // Only require full_name for non-individual users
         if (!isIndividual) {
             if (!patientData.full_name) {
                 return res.status(400).json({ success: false, error: 'Patient name is required' });
             }
         }
 
-        // ✅ INDIVIDUAL PATIENT LIMIT: Different limits based on role
         if (userAccountType === 'individual' && !req.user.company_id) {
             const { count, error: countError } = await supabase
                 .from('patients')
@@ -311,14 +283,11 @@ router.post('/', authenticateToken, async (req, res) => {
                 return res.status(500).json({ success: false, error: 'Failed to verify patient limit' });
             }
 
-            // Determine limit based on role
-            let limit = 5; // Set to 5 for standard individuals
-            let roleType = 'standard individual';
+            let limit = 5;
             let limitMessage = 'Individual subscription allows up to 5 MRs. Please upgrade to Company subscription for unlimited access.';
             
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
-                limit = 5; // Set to 5 as requested
-                roleType = 'pharmacist/pharmacy student';
+                limit = 5;
                 limitMessage = 'As a pharmacist or pharmacy student, you can manage up to 5 MRs.';
             }
 
@@ -339,13 +308,11 @@ router.post('/', authenticateToken, async (req, res) => {
         let user_id = userId;
         let created_by = userId;
 
-        // --- CONSTRAINT FIX: Sync user to 'users' table if missing (for company users) ---
         if ((req.user.account_type === 'company_user' || req.user.role === 'company_admin') && userId) {
             try {
                 const db = supabaseAdmin || supabase;
                 const { data: exists } = await db.from('users').select('id').eq('id', userId).maybeSingle();
                 if (!exists) {
-                    // Fetch source record to get password_hash and other required fields
                     const { data: sourceUser } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
 
                     if (sourceUser) {
@@ -356,7 +323,7 @@ router.post('/', authenticateToken, async (req, res) => {
                             role: sourceUser.role,
                             company_id: sourceUser.company_id,
                             approved: true,
-                            password_hash: sourceUser.password_hash || 'SYNCED_PROVIDER' // Satisfy not-null constraint
+                            password_hash: sourceUser.password_hash || 'SYNCED_PROVIDER'
                         }]);
 
                         if (syncErr) {
@@ -368,11 +335,8 @@ router.post('/', authenticateToken, async (req, res) => {
                 }
             } catch (err) { console.warn('Sync exception:', err.message); }
         }
-        // -------------------------------------------------------------------------------
 
-        // For individual users with no name, generate a default name
         if (isIndividual && (!patientData.full_name || patientData.full_name.trim() === '')) {
-            // Updated: Default to 'MR profile' for all non-admin individual roles
             const isRestrictedIndividual = userAccountType === 'individual' && userRole !== 'admin';
             const defaultName = isRestrictedIndividual ? 'MR profile' : `Patient ${patientData.patient_code || new Date().getTime()}`;
             patientData.full_name = defaultName;
@@ -387,12 +351,8 @@ router.post('/', authenticateToken, async (req, res) => {
         };
 
         delete patientToCreate.id;
-
-        // Legacy patient_code generation removed. 
-        // We now rely exclusively on the database primary key (id).
         delete patientToCreate.patient_code;
 
-        // Clean empty values
         Object.keys(patientToCreate).forEach(k => {
             if (typeof patientToCreate[k] === 'string' && !patientToCreate[k].trim()) {
                 patientToCreate[k] = null;
@@ -404,15 +364,12 @@ router.post('/', authenticateToken, async (req, res) => {
 
         if (error) {
             console.error('❌ Database error saving patient:', error);
-            // Return specific DB error message to help debug (e.g., type mismatch)
             return res.status(500).json({ 
                 success: false, 
                 error: `Database: ${error.message} (Code: ${error.code})` 
             });
         }
 
-        // Still hide patient information if individual
-        // Still hide patient information if individual (if NOT the owner)
         if (userAccountType === 'individual' && userRole !== 'admin' && data.user_id !== userId) {
             const processed = { ...data };
             if (processed.full_name && processed.full_name.startsWith('Patient PAT')) {
@@ -481,7 +438,6 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
 
         const db = supabaseAdmin || supabase;
-        if (!isIdSearch) return res.status(400).json({ error: 'Valid ID required' });
 
         const { data: existing, error: fetchError } = await db.from('patients').select('*').eq('id', patientCode).maybeSingle();
 
@@ -526,11 +482,9 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         const { data: patient } = await db.from('patients').select('user_id').eq('id', patientId).single();
         if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
 
-        // Admins can delete any patient; owners/company staff can delete patients they have access to
         const isAdmin = userRole === 'admin' || userRole === 'superadmin';
         const isOwner = patient.user_id === userId;
         
-        // 🛡️ [ALL USERS] Check accessible IDs for company admins/staff
         const accessibleUserIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
         const hasPermission = isAdmin || isOwner || (accessibleUserIds && accessibleUserIds.includes(patient.user_id));
 
@@ -538,10 +492,9 @@ router.delete('/:id', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'You do not have permission to delete this patient' });
         }
 
-        // 🗑️ [CASCADE] Delete all related records first to avoid foreign key constraint errors
         const relatedTables = [
             'medication_reconciliations',
-            'medication_reconciliation', // Handle both singular and plural just in case
+            'medication_reconciliation',
             'drn_assessments',
             'medication_history',
             'plans',
@@ -554,12 +507,11 @@ router.delete('/:id', authenticateToken, async (req, res) => {
             'lab_results',
             'vital_signs',
             'patient_access',
-            'pharmacy_assistance_plans' // Added for pharmacy plans cascade delete
+            'pharmacy_assistance_plans'
         ];
 
         console.log(`🗑️ [Delete Patient] Cleaning up related data for patient ${patientId}...`);
         
-        // Execute all deletions in parallel for efficiency
         await Promise.all(relatedTables.map(table => 
             db.from(table).delete().eq('patient_id', patientId)
         ));
@@ -607,19 +559,29 @@ router.get('/search/:query', authenticateToken, async (req, res) => {
 
 // ================= PHARMACY ASSISTANCE PLANS ROUTES =================
 
-// Get pharmacy plans for a patient
-router.get('/pharmacy-plans/patient/:patientId', authenticateToken, async (req, res) => {
+// Helper function to find patient by code or ID
+const findPatientByIdentifier = async (identifier) => {
+    let query = supabase.from('patients').select('id, user_id, patient_code');
+    
+    if (/^\d+$/.test(identifier)) {
+        query = query.eq('id', identifier);
+    } else {
+        query = query.eq('patient_code', identifier);
+    }
+    
+    const { data, error } = await query.maybeSingle();
+    return { data, error };
+};
+
+// Get pharmacy plans for a patient (accepts patient_code or ID)
+router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, async (req, res) => {
     try {
-        const { patientId } = req.params;
+        const { patientIdentifier } = req.params;
         const userId = req.user.userId;
         const userRole = req.user.role;
 
-        // Verify patient access
-        const { data: patient, error: patientError } = await supabase
-            .from('patients')
-            .select('user_id')
-            .eq('id', patientId)
-            .single();
+        // Find patient by code or ID
+        const { data: patient, error: patientError } = await findPatientByIdentifier(patientIdentifier);
 
         if (patientError || !patient) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
@@ -627,12 +589,11 @@ router.get('/pharmacy-plans/patient/:patientId', authenticateToken, async (req, 
 
         // Check permission
         if (userRole !== 'admin' && patient.user_id !== userId) {
-            // Check for shared access
             const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
             const { data: access } = await supabase
                 .from('access_requests')
                 .select('id')
-                .eq('patient_id', patientId)
+                .eq('patient_id', patient.id)
                 .eq('requester_id', userId)
                 .eq('status', 'approved')
                 .gt('approved_at', twentyFourHoursAgo)
@@ -647,7 +608,7 @@ router.get('/pharmacy-plans/patient/:patientId', authenticateToken, async (req, 
         const { data: plans, error } = await supabase
             .from('pharmacy_assistance_plans')
             .select('*')
-            .eq('patient_id', patientId)
+            .eq('patient_id', patient.id)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
@@ -659,38 +620,34 @@ router.get('/pharmacy-plans/patient/:patientId', authenticateToken, async (req, 
     }
 });
 
-// Create new pharmacy assistance plan
+// Create new pharmacy assistance plan (accepts patient_code)
 router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
-        const { patient_id, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
+        const { patient_code, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
 
         // Validate required fields
-        if (!patient_id || !goals || !notes) {
+        if (!patient_code || !goals || !notes) {
             return res.status(400).json({ 
                 success: false, 
-                error: 'Missing required fields: patient_id, goals, and notes are required' 
+                error: 'Missing required fields: patient_code, goals, and notes are required' 
             });
         }
 
-        // Verify patient access
-        const { data: patient, error: patientError } = await supabase
-            .from('patients')
-            .select('user_id')
-            .eq('id', patient_id)
-            .single();
+        // Find patient by code
+        const { data: patient, error: patientError } = await findPatientByIdentifier(patient_code);
 
         if (patientError || !patient) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
 
+        // Check permission
         if (req.user.role !== 'admin' && patient.user_id !== userId) {
-            // Check for shared access
             const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
             const { data: access } = await supabase
                 .from('access_requests')
                 .select('id')
-                .eq('patient_id', patient_id)
+                .eq('patient_id', patient.id)
                 .eq('requester_id', userId)
                 .eq('status', 'approved')
                 .gt('approved_at', twentyFourHoursAgo)
@@ -703,7 +660,7 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
 
         // Create the plan
         const planData = {
-            patient_id: parseInt(patient_id),
+            patient_id: patient.id,
             user_id: userId,
             plan_type: plan_type || null,
             goals: goals,
