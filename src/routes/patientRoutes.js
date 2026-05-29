@@ -24,7 +24,6 @@ router.get('/count', authenticateToken, async (req, res) => {
             });
         }
 
-        // Calculate limit based on role for frontend display
         let limit = 'unlimited';
         let limitMessage = '';
         
@@ -109,15 +108,10 @@ router.get('/', authenticateToken, async (req, res) => {
         const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
         
         if (fetchError) {
-            console.error('❌ [DATABASE] Patient retrieval failed. Query attempted for:', activeIds);
-            console.error('DATABASE ERROR:', fetchError.message);
+            console.error('❌ [DATABASE] Patient retrieval failed:', fetchError.message);
             const { data: fallbackPatients, error: fallbackError } = await db.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
             if (!fallbackError) return res.json({ success: true, patients: fallbackPatients || [], message: "Fallback results shown due to type mismatch" });
             throw fetchError;
-        }
-
-        if (!patients || patients.length === 0) {
-            console.warn(`⚠️ [List Fetch] Zero results found for User: ${userId} (Role: ${userRole}). Active IDs: ${JSON.stringify(activeIds)}`);
         }
 
         const sanitizedPatients = (patients || []).map(p => {
@@ -218,7 +212,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
                     .maybeSingle();
 
                 if (!access) {
-                    console.warn(`🔒 [BLOCK] Access denied for requester ${userId} to patient ${data.id} (owned by ${data.user_id})`);
+                    console.warn(`🔒 [BLOCK] Access denied for requester ${userId} to patient ${data.id}`);
                     return res.status(403).json({ success: false, error: 'Access denied' });
                 }
             }
@@ -305,37 +299,6 @@ router.post('/', authenticateToken, async (req, res) => {
             }
         }
 
-        let user_id = userId;
-        let created_by = userId;
-
-        if ((req.user.account_type === 'company_user' || req.user.role === 'company_admin') && userId) {
-            try {
-                const db = supabaseAdmin || supabase;
-                const { data: exists } = await db.from('users').select('id').eq('id', userId).maybeSingle();
-                if (!exists) {
-                    const { data: sourceUser } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
-
-                    if (sourceUser) {
-                        const { error: syncErr } = await db.from('users').insert([{
-                            id: userId,
-                            email: sourceUser.email,
-                            full_name: sourceUser.full_name,
-                            role: sourceUser.role,
-                            company_id: sourceUser.company_id,
-                            approved: true,
-                            password_hash: sourceUser.password_hash || 'SYNCED_PROVIDER'
-                        }]);
-
-                        if (syncErr) {
-                            console.error('❌ [FIX] Sync failed:', syncErr.message);
-                        }
-                    } else {
-                        console.warn('⚠️ [FIX] Source user not found in company_users, cannot sync.');
-                    }
-                }
-            } catch (err) { console.warn('Sync exception:', err.message); }
-        }
-
         if (isIndividual && (!patientData.full_name || patientData.full_name.trim() === '')) {
             const isRestrictedIndividual = userAccountType === 'individual' && userRole !== 'admin';
             const defaultName = isRestrictedIndividual ? 'MR profile' : `Patient ${patientData.patient_code || new Date().getTime()}`;
@@ -391,8 +354,6 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         const identifier = req.params.identifier;
         const userId = req.user.userId;
         const userRole = req.user.role;
-
-        const isIdSearch = identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) || /^\d+$/.test(identifier);
 
         const db = supabaseAdmin || supabase;
         const { data: existing, error: fetchError } = await db.from('patients').select('id, user_id').eq('id', identifier).maybeSingle();
@@ -559,29 +520,56 @@ router.get('/search/:query', authenticateToken, async (req, res) => {
 
 // ================= PHARMACY ASSISTANCE PLANS ROUTES =================
 
-// Helper function to find patient by code or ID
-const findPatientByIdentifier = async (identifier) => {
-    let query = supabase.from('patients').select('id, user_id, patient_code');
-    
-    if (/^\d+$/.test(identifier)) {
-        query = query.eq('id', identifier);
-    } else {
-        query = query.eq('patient_code', identifier);
+// Helper function to get patient ID from code or ID
+const getPatientId = async (identifier) => {
+    try {
+        // If identifier is numeric, try as ID first
+        if (/^\d+$/.test(identifier)) {
+            const { data, error } = await supabase
+                .from('patients')
+                .select('id')
+                .eq('id', parseInt(identifier))
+                .maybeSingle();
+            
+            if (!error && data) return data.id;
+        }
+        
+        // Try as patient_code
+        const { data, error } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('patient_code', identifier)
+            .maybeSingle();
+        
+        if (!error && data) return data.id;
+        
+        return null;
+    } catch (error) {
+        console.error('Error finding patient:', error);
+        return null;
     }
-    
-    const { data, error } = await query.maybeSingle();
-    return { data, error };
 };
 
-// Get pharmacy plans for a patient (accepts patient_code or ID)
+// Get pharmacy plans for a patient
 router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, async (req, res) => {
     try {
         const { patientIdentifier } = req.params;
         const userId = req.user.userId;
         const userRole = req.user.role;
 
-        // Find patient by code or ID
-        const { data: patient, error: patientError } = await findPatientByIdentifier(patientIdentifier);
+        // Get patient ID from the identifier
+        const patientId = await getPatientId(patientIdentifier);
+        
+        if (!patientId) {
+            return res.status(404).json({ success: false, error: 'Patient not found' });
+        }
+
+        // Verify patient access
+        const { data: patient, error: patientError } = await supabase
+            .from('patients')
+            .select('user_id')
+            .eq('id', patientId)
+            .single();
 
         if (patientError || !patient) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
@@ -593,7 +581,7 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
             const { data: access } = await supabase
                 .from('access_requests')
                 .select('id')
-                .eq('patient_id', patient.id)
+                .eq('patient_id', patientId)
                 .eq('requester_id', userId)
                 .eq('status', 'approved')
                 .gt('approved_at', twentyFourHoursAgo)
@@ -608,7 +596,7 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
         const { data: plans, error } = await supabase
             .from('pharmacy_assistance_plans')
             .select('*')
-            .eq('patient_id', patient.id)
+            .eq('patient_id', patientId)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
@@ -620,22 +608,47 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
     }
 });
 
-// Create new pharmacy assistance plan (accepts patient_code)
+// Create new pharmacy assistance plan
 router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { patient_code, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
 
         // Validate required fields
-        if (!patient_code || !goals || !notes) {
+        if (!patient_code) {
             return res.status(400).json({ 
                 success: false, 
-                error: 'Missing required fields: patient_code, goals, and notes are required' 
+                error: 'patient_code is required' 
+            });
+        }
+        
+        if (!goals || !goals.trim()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Pharmacy Assessment is required' 
+            });
+        }
+        
+        if (!notes || !notes.trim()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Plan of Action is required' 
             });
         }
 
-        // Find patient by code
-        const { data: patient, error: patientError } = await findPatientByIdentifier(patient_code);
+        // Get patient ID from the code
+        const patientId = await getPatientId(patient_code);
+        
+        if (!patientId) {
+            return res.status(404).json({ success: false, error: 'Patient not found' });
+        }
+
+        // Verify patient access
+        const { data: patient, error: patientError } = await supabase
+            .from('patients')
+            .select('user_id')
+            .eq('id', patientId)
+            .single();
 
         if (patientError || !patient) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
@@ -647,7 +660,7 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
             const { data: access } = await supabase
                 .from('access_requests')
                 .select('id')
-                .eq('patient_id', patient.id)
+                .eq('patient_id', patientId)
                 .eq('requester_id', userId)
                 .eq('status', 'approved')
                 .gt('approved_at', twentyFourHoursAgo)
@@ -660,14 +673,14 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
 
         // Create the plan
         const planData = {
-            patient_id: patient.id,
+            patient_id: patientId,
             user_id: userId,
             plan_type: plan_type || null,
-            goals: goals,
+            goals: goals.trim(),
             medications: medications || '',
             monitoring: monitoring || '',
             follow_up: follow_up || null,
-            notes: notes,
+            notes: notes.trim(),
             created_at: new Date(),
             updated_at: new Date()
         };
