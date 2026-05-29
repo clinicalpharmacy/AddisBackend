@@ -553,7 +553,8 @@ router.delete('/:id', authenticateToken, async (req, res) => {
             'patient_physical_assessment',
             'lab_results',
             'vital_signs',
-            'patient_access'
+            'patient_access',
+            'pharmacy_assistance_plans' // Added for pharmacy plans cascade delete
         ];
 
         console.log(`🗑️ [Delete Patient] Cleaning up related data for patient ${patientId}...`);
@@ -572,8 +573,6 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, error: e.message || 'Failed to delete patient' });
     }
 });
-
-
 
 // Search patients
 router.get('/search/:query', authenticateToken, async (req, res) => {
@@ -603,6 +602,220 @@ router.get('/search/:query', authenticateToken, async (req, res) => {
         res.json({ success: true, patients: data || [] });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+// ================= PHARMACY ASSISTANCE PLANS ROUTES =================
+
+// Get pharmacy plans for a patient
+router.get('/pharmacy-plans/patient/:patientId', authenticateToken, async (req, res) => {
+    try {
+        const { patientId } = req.params;
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+
+        // Verify patient access
+        const { data: patient, error: patientError } = await supabase
+            .from('patients')
+            .select('user_id')
+            .eq('id', patientId)
+            .single();
+
+        if (patientError || !patient) {
+            return res.status(404).json({ success: false, error: 'Patient not found' });
+        }
+
+        // Check permission
+        if (userRole !== 'admin' && patient.user_id !== userId) {
+            // Check for shared access
+            const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const { data: access } = await supabase
+                .from('access_requests')
+                .select('id')
+                .eq('patient_id', patientId)
+                .eq('requester_id', userId)
+                .eq('status', 'approved')
+                .gt('approved_at', twentyFourHoursAgo)
+                .maybeSingle();
+
+            if (!access) {
+                return res.status(403).json({ success: false, error: 'Access denied' });
+            }
+        }
+
+        // Fetch pharmacy plans
+        const { data: plans, error } = await supabase
+            .from('pharmacy_assistance_plans')
+            .select('*')
+            .eq('patient_id', patientId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        res.json({ success: true, plans: plans || [] });
+    } catch (error) {
+        console.error('Error fetching pharmacy plans:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Create new pharmacy assistance plan
+router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { patient_id, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
+
+        // Validate required fields
+        if (!patient_id || !goals || !notes) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing required fields: patient_id, goals, and notes are required' 
+            });
+        }
+
+        // Verify patient access
+        const { data: patient, error: patientError } = await supabase
+            .from('patients')
+            .select('user_id')
+            .eq('id', patient_id)
+            .single();
+
+        if (patientError || !patient) {
+            return res.status(404).json({ success: false, error: 'Patient not found' });
+        }
+
+        if (req.user.role !== 'admin' && patient.user_id !== userId) {
+            // Check for shared access
+            const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const { data: access } = await supabase
+                .from('access_requests')
+                .select('id')
+                .eq('patient_id', patient_id)
+                .eq('requester_id', userId)
+                .eq('status', 'approved')
+                .gt('approved_at', twentyFourHoursAgo)
+                .maybeSingle();
+
+            if (!access) {
+                return res.status(403).json({ success: false, error: 'Access denied' });
+            }
+        }
+
+        // Create the plan
+        const planData = {
+            patient_id: parseInt(patient_id),
+            user_id: userId,
+            plan_type: plan_type || null,
+            goals: goals,
+            medications: medications || '',
+            monitoring: monitoring || '',
+            follow_up: follow_up || null,
+            notes: notes,
+            created_at: new Date(),
+            updated_at: new Date()
+        };
+
+        const { data, error } = await supabase
+            .from('pharmacy_assistance_plans')
+            .insert([planData])
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
+        res.status(201).json({ success: true, plan: data });
+    } catch (error) {
+        console.error('Error creating pharmacy plan:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Update pharmacy plan
+router.put('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
+    try {
+        const { planId } = req.params;
+        const userId = req.user.userId;
+        const { plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
+
+        // Get existing plan
+        const { data: existingPlan, error: fetchError } = await supabase
+            .from('pharmacy_assistance_plans')
+            .select('*')
+            .eq('id', planId)
+            .single();
+
+        if (fetchError || !existingPlan) {
+            return res.status(404).json({ success: false, error: 'Plan not found' });
+        }
+
+        // Check permission
+        if (req.user.role !== 'admin' && existingPlan.user_id !== userId) {
+            return res.status(403).json({ success: false, error: 'Access denied' });
+        }
+
+        // Update plan
+        const updates = {
+            plan_type: plan_type !== undefined ? plan_type : existingPlan.plan_type,
+            goals: goals || existingPlan.goals,
+            medications: medications !== undefined ? medications : existingPlan.medications,
+            monitoring: monitoring !== undefined ? monitoring : existingPlan.monitoring,
+            follow_up: follow_up !== undefined ? follow_up : existingPlan.follow_up,
+            notes: notes || existingPlan.notes,
+            updated_at: new Date()
+        };
+
+        const { data, error } = await supabase
+            .from('pharmacy_assistance_plans')
+            .update(updates)
+            .eq('id', planId)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        res.json({ success: true, plan: data });
+    } catch (error) {
+        console.error('Error updating pharmacy plan:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Delete pharmacy plan
+router.delete('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
+    try {
+        const { planId } = req.params;
+        const userId = req.user.userId;
+
+        // Check permission
+        const { data: plan, error: fetchError } = await supabase
+            .from('pharmacy_assistance_plans')
+            .select('user_id')
+            .eq('id', planId)
+            .single();
+
+        if (fetchError || !plan) {
+            return res.status(404).json({ success: false, error: 'Plan not found' });
+        }
+
+        if (req.user.role !== 'admin' && plan.user_id !== userId) {
+            return res.status(403).json({ success: false, error: 'Access denied' });
+        }
+
+        // Delete plan
+        const { error } = await supabase
+            .from('pharmacy_assistance_plans')
+            .delete()
+            .eq('id', planId);
+
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Plan deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting pharmacy plan:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
