@@ -500,8 +500,8 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
 
                             // Record Commission if referred
                             if (user.referred_by_id) {
-                                // Default commission amount 10% of payment amount
-                                const commissionAmount = payment.amount * 0.10;
+                                // Default commission amount 2% of payment amount
+                                const commissionAmount = payment.amount * 0.02;
                                 await db.from('commissions').insert([{
                                     user_id: user.referred_by_id,
                                     referred_user_id: user.id,
