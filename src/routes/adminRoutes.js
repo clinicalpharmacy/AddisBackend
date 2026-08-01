@@ -406,5 +406,70 @@ router.get('/subscriptions', authenticateToken, requireAdmin, async (req, res) =
     }
 });
 
+// 💰 Get all referral/promotion data for admin
+router.get('/referrals', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+
+        // Get all users with promotion codes
+        const { data: users, error: usersErr } = await db.from('users')
+            .select('id, email, full_name, promotion_code, referred_by_id, created_at')
+            .not('promotion_code', 'is', null)
+            .order('created_at', { ascending: false });
+
+        if (usersErr) throw usersErr;
+
+        // Get all commissions
+        const { data: commissions, error: commErr } = await db.from('commissions')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+        if (commErr) throw commErr;
+
+        // Build referral stats per user
+        const referralStats = (users || []).map(user => {
+            // Count how many users used this person's code
+            const referredUsers = (users || []).filter(u => u.referred_by_id === user.id);
+            // Sum commissions earned
+            const userCommissions = (commissions || []).filter(c => c.user_id === user.id);
+            const totalEarned = userCommissions.reduce((sum, c) => sum + Number(c.amount), 0);
+
+            return {
+                id: user.id,
+                email: user.email,
+                full_name: user.full_name,
+                promotion_code: user.promotion_code,
+                referrals_count: referredUsers.length,
+                total_earned: totalEarned,
+                referred_users: referredUsers.map(r => ({
+                    id: r.id,
+                    email: r.email,
+                    full_name: r.full_name,
+                    created_at: r.created_at
+                })),
+                commissions: userCommissions,
+                created_at: user.created_at
+            };
+        });
+
+        // Summary stats
+        const totalCommissions = (commissions || []).reduce((sum, c) => sum + Number(c.amount), 0);
+        const totalReferrals = (users || []).filter(u => u.referred_by_id).length;
+
+        res.json({
+            success: true,
+            referral_stats: referralStats,
+            summary: {
+                total_users_with_codes: users?.length || 0,
+                total_referrals: totalReferrals,
+                total_commissions_paid: totalCommissions,
+                total_commission_records: commissions?.length || 0
+            }
+        });
+    } catch (err) {
+        console.error('❌ [Admin/Referrals] error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch referral data' });
+    }
+});
 
 export default router;
