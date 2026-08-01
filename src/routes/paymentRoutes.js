@@ -387,7 +387,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                         }
 
                         let user = null;
-                        const { data: regularUser, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token').ilike('email', cleanEmail).maybeSingle();
+                        const { data: regularUser, error: userError } = await db.from('users').select('id, company_id, role, email, full_name, email_verified, email_verification_token, referred_by_id').ilike('email', cleanEmail).maybeSingle();
 
                         if (userError) {
                             console.error('❌ User lookup error in payment verify:', userError.message);
@@ -480,6 +480,22 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 end_date: endDate,
                                 created_at: new Date().toISOString()
                             }]);
+
+                            // Record Commission if referred
+                            if (user.referred_by_id) {
+                                // Default commission amount 10% of payment amount
+                                const commissionAmount = payment.amount * 0.10;
+                                await db.from('commissions').insert([{
+                                    user_id: user.referred_by_id,
+                                    referred_user_id: user.id,
+                                    amount: commissionAmount,
+                                    payment_id: check.data.data.id,
+                                    status: 'pending',
+                                    created_at: new Date().toISOString(),
+                                    updated_at: new Date().toISOString()
+                                }]);
+                                console.log(`💰 Verify: Commission of ${commissionAmount} recorded for user ${user.referred_by_id}`);
+                            }
 
                             // Send Verification Email if not verified
                             if (!user.email_verified && currentToken) {

@@ -40,6 +40,37 @@ router.get('/me', authenticateToken, async (req, res) => {
     }
 });
 
+// 💰 Get user commission stats
+router.get('/commissions', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const db = supabaseAdmin || supabase;
+
+        // Get total commission
+        const { data: commissions, error: commError } = await db.from('commissions')
+            .select('amount')
+            .eq('user_id', userId);
+
+        if (commError) throw commError;
+
+        const totalEarned = commissions ? commissions.reduce((sum, c) => sum + Number(c.amount), 0) : 0;
+        const referralCount = commissions ? commissions.length : 0;
+
+        // Get user's promotion code
+        const { data: user, error: userError } = await db.from('users').select('promotion_code').eq('id', userId).maybeSingle();
+        
+        res.json({
+            success: true,
+            total_earned: totalEarned,
+            referrals_count: referralCount,
+            promotion_code: user?.promotion_code || 'N/A'
+        });
+    } catch (err) {
+        console.error('❌ [Auth/Commissions] error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch commissions' });
+    }
+});
+
 // Helper to generate random token
 const generateToken = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -347,7 +378,7 @@ router.post('/verify-token', async (req, res) => {
 // Register Individual
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, full_name, phone = '', country = 'Ethiopia', region = '', woreda = '', tin_number = '', license_number = '', role = 'pharmacist', account_type = 'individual', skip_verification_email = false } = req.body;
+        const { email, password, full_name, phone = '', country = 'Ethiopia', region = '', woreda = '', tin_number = '', license_number = '', role = 'pharmacist', account_type = 'individual', skip_verification_email = false, referral_code } = req.body;
 
         if (!email || !password || !full_name || !phone) return res.status(400).json({ success: false, error: 'Required fields missing' });
         const trimmedEmail = email.trim().toLowerCase();
@@ -365,6 +396,20 @@ router.post('/register', async (req, res) => {
         // Generate email verification token
         const verificationToken = generateToken();
         const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
+        // Handle referral code
+        let referredById = null;
+        if (referral_code) {
+            const { data: referrer } = await supabase.from('users').select('id').eq('promotion_code', referral_code.trim().toUpperCase()).maybeSingle();
+            if (referrer) {
+                referredById = referrer.id;
+            }
+        }
+
+        // Generate promotion code
+        const nameBase = full_name ? full_name.replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase() : 'USR';
+        const baseStr = nameBase.length > 0 ? nameBase : 'USR';
+        const promotionCode = baseStr + Math.floor(Math.random() * 9000 + 1000) + Math.random().toString(36).substring(2, 5).toUpperCase();
 
         const userData = {
             email: trimmedEmail,
@@ -384,6 +429,8 @@ router.post('/register', async (req, res) => {
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
             encryption_salt: encryptionSalt,
+            promotion_code: promotionCode,
+            referred_by_id: referredById,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
