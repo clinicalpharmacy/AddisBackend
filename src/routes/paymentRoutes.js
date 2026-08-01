@@ -361,7 +361,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                             // Generate promotion code
                             const genPromo = `HC${Math.random().toString().substring(2, 6)}`;
 
-                            const { error: upsertError } = await db.from('users').upsert([{
+                            const { data: upsertData, error: upsertError } = await db.from('users').upsert([{
                                 email: cleanEmail,
                                 password_hash: hashedPassword,
                                 full_name: `Healthcare Client ${clientId}`,
@@ -381,17 +381,48 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 referred_by_id: referredById,
                                 created_at: new Date().toISOString(),
                                 updated_at: new Date().toISOString()
-                            }], { onConflict: 'email' });
+                            }], { onConflict: 'email' }).select().single();
 
-                            if (upsertError) {
+                            if (upsertError || !upsertData) {
                                 console.error('❌ Verify: Failed to create healthcare client user account:', JSON.stringify(upsertError, null, 2));
                                 return res.status(500).json({
                                     success: false,
                                     error: 'Account creation failed after payment. Please contact support.',
-                                    details: upsertError.message
+                                    details: upsertError?.message
                                 });
                             }
                             console.log(`✅ Verify: Healthcare client user created successfully: ${cleanEmail}`);
+
+                            // Record in subscriptions history
+                            await db.from('subscriptions').insert([{
+                                user_id: upsertData.id,
+                                company_id: null,
+                                plan_id: payment.plan_id,
+                                plan_name: payment.plan_name,
+                                amount: payment.amount,
+                                currency: payment.currency,
+                                status: 'active',
+                                payment_method: 'chapa',
+                                tx_ref: tx_ref,
+                                start_date: new Date().toISOString(),
+                                end_date: endDate,
+                                created_at: new Date().toISOString()
+                            }]);
+
+                            // Record Commission if referred
+                            if (referredById) {
+                                const commissionAmount = payment.amount * 0.02;
+                                await db.from('commissions').insert([{
+                                    user_id: referredById,
+                                    referred_user_id: upsertData.id,
+                                    amount: commissionAmount,
+                                    payment_id: check.data.data.id,
+                                    status: 'pending',
+                                    created_at: new Date().toISOString(),
+                                    updated_at: new Date().toISOString()
+                                }]);
+                                console.log(`💰 Verify (HC Client): Commission of ${commissionAmount} recorded for user ${referredById}`);
+                            }
 
                             return res.json({
                                 success: true,
