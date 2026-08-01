@@ -85,3 +85,80 @@ export async function analyzePatientCDSS(patientData, attempts = 0) {
         throw new Error(`Gemini Connection Error: ${error.message}`);
     }
 }
+
+/**
+ * Gemini AI Service for Quick Safety Checks.
+ * Evaluates a specific medication for special populations.
+ */
+export async function analyzeQuickSafety(drugName, attempts = 0) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error("GEMINI_API_KEY is not configured.");
+
+    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"];
+    const model = models[attempts] || models[models.length - 1];
+
+    try {
+        console.log(`[Gemini AI] Requesting: ${model} (Quick Safety Check for ${drugName})`);
+
+        const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+            {
+                contents: [
+                    {
+                        parts: [
+                            {
+                                text: `You are an expert clinical safety system designed for patients and general healthcare clients.
+                                Evaluate the safety profile of the medication: "${drugName}".
+                                
+                                For each category below, provide a safety status (must be one of: "Safe", "Caution", "Contraindicated", "Unknown") and a brief, patient-friendly explanation.
+                                
+                                Return ONLY a valid JSON object with this exact structure:
+                                {
+                                    "medication": "...",
+                                    "general_overview": "...",
+                                    "categories": {
+                                        "pregnancy": { "status": "...", "details": "..." },
+                                        "lactation": { "status": "...", "details": "..." },
+                                        "elderly": { "status": "...", "details": "..." },
+                                        "neonate": { "status": "...", "details": "..." },
+                                        "kidney_failure": { "status": "...", "details": "..." },
+                                        "liver_failure": { "status": "...", "details": "..." }
+                                    },
+                                    "major_interactions": ["...", "..."]
+                                }`
+                            }
+                        ]
+                    }
+                ],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    temperature: 0.1
+                }
+            },
+            {
+                headers: { "Content-Type": "application/json" },
+                timeout: 30000
+            }
+        );
+
+        if (!response.data.candidates || response.data.candidates.length === 0) {
+            throw new Error("Gemini AI returned no candidates.");
+        }
+
+        let content = response.data.candidates[0].content.parts[0].text;
+        content = content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+
+        return JSON.parse(content);
+
+    } catch (error) {
+        const status = error.response?.status;
+        const data = error.response?.data;
+
+        if ((status === 503 || status === 429) && attempts < (models.length - 1)) {
+            console.warn(`[Gemini AI Warning] ${model} unavailable (Status ${status}). Falling back...`);
+            return analyzeQuickSafety(drugName, attempts + 1);
+        }
+
+        throw new Error(`Gemini AI failed for safety check: ${data?.error?.message || error.message}`);
+    }
+}

@@ -514,8 +514,169 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
     }
 });
 
+/**
+ * Quick Safety Check (Database-driven instead of AI)
+ * Supports nested rule_condition structures like:
+ *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
+ */
+router.post('/quick-safety', authenticateToken, async (req, res) => {
+    try {
+        const { medication } = req.body;
+        if (!medication) return res.status(400).json({ success: false, error: 'Medication required' });
 
+        const targetDb = supabaseAdmin || supabase;
+        const { data: rules, error } = await targetDb
+            .from('clinical_rules')
+            .select('*')
+            .eq('is_active', true);
 
+        if (error) throw error;
+
+        const medName = medication.toLowerCase().trim();
+        
+        // Base safety profile structure
+        const safetyProfile = {
+            medication: medication,
+            general_overview: `Safety profile derived from clinical rules database for ${medication}.`,
+            categories: {
+                pregnancy: { status: 'Safe', details: 'No known contraindications in database.' },
+                lactation: { status: 'Safe', details: 'No known contraindications in database.' },
+                elderly: { status: 'Safe', details: 'No known contraindications in database.' },
+                neonate: { status: 'Safe', details: 'No known contraindications in database.' },
+                kidney_failure: { status: 'Safe', details: 'No known contraindications in database.' },
+                liver_failure: { status: 'Safe', details: 'No known contraindications in database.' }
+            },
+            major_interactions: []
+        };
+
+        /**
+         * Recursively collect ALL leaf facts from a nested condition tree.
+         * Handles: { all: [...] }, { any: [...] }, and plain { fact, value, operator }
+         */
+        const collectFacts = (node) => {
+            if (!node) return [];
+            const results = [];
+            if (node.fact) {
+                results.push(node);
+            }
+            if (Array.isArray(node.all)) {
+                node.all.forEach(child => results.push(...collectFacts(child)));
+            }
+            if (Array.isArray(node.any)) {
+                node.any.forEach(child => results.push(...collectFacts(child)));
+            }
+            return results;
+        };
+
+        // Helper to check if a condition targets this medication
+        const hasMedication = (condition) => {
+            const facts = collectFacts(condition);
+            return facts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
+        };
+
+        // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
+        const isElderlyCheck = (f) => {
+            if (f.fact !== 'age') return false;
+            const op = f.operator;
+            const val = Number(f.value);
+            return (op === '>=' && val >= 60) || (op === '>' && val >= 59) ||
+                   (op === 'greaterThan' && val >= 59) || (op === 'greaterThanOrEqual' && val >= 60) ||
+                   (op === 'greaterThanInclusive' && val >= 60);
+        };
+
+        // Helper: is an operator a "neonate/pediatric" check? (age < 2, age <= 12, etc.)
+        const isNeonateCheck = (f) => {
+            if (f.fact !== 'age') return false;
+            const op = f.operator;
+            const val = Number(f.value);
+            return (op === '<' && val <= 18) || (op === '<=' && val <= 18) ||
+                   (op === 'lessThan' && val <= 18) || (op === 'lessThanOrEqual' && val <= 18);
+        };
+
+        // Parse each rule
+        rules.forEach(rule => {
+            const cond = rule.rule_condition;
+            if (!hasMedication(cond)) return;
+
+            const allFacts = collectFacts(cond);
+            const severity = rule.severity;
+            const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
+            const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
+            const detail = rec ? `${msg} ${rec}` : msg;
+            const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
+            
+            // Check for drug interactions (only if rule is meant for interactions)
+            if (rule.rule_type === 'drug_interaction' || String(rule.rule_name).toLowerCase().includes('interaction')) {
+                let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
+                interactionBlocks.forEach(block => {
+                    const blockFacts = collectFacts(block);
+                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
+                    if (involvesTargetMed) {
+                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
+                        otherMedsInBlock.forEach(i => {
+                            safetyProfile.major_interactions.push(`${i.value} — ${msg}`);
+                        });
+                    }
+                });
+            }
+
+            const lowerRuleName = String(rule.rule_name).toLowerCase();
+            const lowerRuleType = String(rule.rule_type).toLowerCase();
+
+            // Check for pregnancy
+            if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'pregnancy'))) {
+                safetyProfile.categories.pregnancy = { status, details: detail };
+            }
+
+            // Check for lactation
+            if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'lactation') || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'breastfeeding'))) {
+                safetyProfile.categories.lactation = { status, details: detail };
+            }
+
+            // Check for elderly
+            if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
+                safetyProfile.categories.elderly = { status, details: detail };
+            }
+
+            // Check for neonates/pediatrics
+            if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
+                safetyProfile.categories.neonate = { status, details: detail };
+            }
+
+            // Check for kidney failure
+            if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f => 
+                f.fact === 'labs.creatinine_clearance' || f.fact === 'labs.egfr' || f.fact === 'labs.serum_creatinine' ||
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) || 
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('kidney')) ||
+                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('renal')) ||
+                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('kidney'))
+            )) {
+                safetyProfile.categories.kidney_failure = { status, details: detail };
+            }
+
+            // Check for liver failure
+            if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f => 
+                f.fact === 'labs.total_bilirubin' || f.fact === 'labs.ast' || f.fact === 'labs.alt' || f.fact === 'labs.inr' ||
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) || 
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('hepatic')) ||
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('cirrhosis')) ||
+                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('liver')) ||
+                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('hepatic'))
+            )) {
+                safetyProfile.categories.liver_failure = { status, details: detail };
+            }
+        });
+        
+        // Remove duplicates from interactions
+        safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
+
+        res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
+
+    } catch (e) {
+        console.error('\u274c Quick Safety Error:', e);
+        res.status(500).json({ success: false, error: 'Failed to retrieve safety profile' });
+    }
+});
 // Patient Medications for CDSS / History
 router.get('/medication-history/patient/:patientCode', authenticateToken, async (req, res) => {
     try {
