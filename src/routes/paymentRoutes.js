@@ -349,7 +349,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
 
                             // Lookup referrer if any
                             let referredById = null;
-                            const refCode = payment.gateway_response?.referral_code;
+                            const refCode = payment.gateway_response?.referral_code?.trim()?.toUpperCase();
                             if (refCode) {
                                 const { data: referrer } = await db.from('users').select('id').eq('promotion_code', refCode).maybeSingle();
                                 if (referrer) {
