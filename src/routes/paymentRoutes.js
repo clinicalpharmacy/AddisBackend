@@ -14,7 +14,7 @@ const CHAPA_SECRET_KEY = config.chapa.secretKey;
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {
     try {
-        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password } = req.body;
+        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code } = req.body;
         if (!planId || !userEmail) return res.status(400).json({ error: 'Missing planId or email' });
 
         userEmail = userEmail.trim().toLowerCase();
@@ -79,7 +79,8 @@ router.post('/chapa/create-payment', async (req, res) => {
                 ...response.data,
                 is_healthcare_client: isHealthcareClient,
                 healthcare_client_id: isHealthcareClient ? userEmail.split('@')[0] : null,
-                client_password: client_password || null
+                client_password: client_password || null,
+                referral_code: referral_code || null
             },
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -346,6 +347,20 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                             const rawPassword = payment.gateway_response?.client_password || 'healthcare123';
                             const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
+                            // Lookup referrer if any
+                            let referredById = null;
+                            const refCode = payment.gateway_response?.referral_code;
+                            if (refCode) {
+                                const { data: referrer } = await db.from('users').select('id').eq('promotion_code', refCode).maybeSingle();
+                                if (referrer) {
+                                    referredById = referrer.id;
+                                    console.log(`ℹ️ Verify: Referrer found for healthcare client. ID: ${referredById}`);
+                                }
+                            }
+
+                            // Generate promotion code
+                            const genPromo = `HC${Math.random().toString().substring(2, 6)}`;
+
                             const { error: upsertError } = await db.from('users').upsert([{
                                 email: cleanEmail,
                                 password_hash: hashedPassword,
@@ -362,6 +377,8 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 subscription_status: 'active',
                                 subscription_plan: payment.plan_id,
                                 subscription_end_date: endDate,
+                                promotion_code: genPromo,
+                                referred_by_id: referredById,
                                 created_at: new Date().toISOString(),
                                 updated_at: new Date().toISOString()
                             }], { onConflict: 'email' });
