@@ -59,11 +59,18 @@ router.get('/commissions', authenticateToken, async (req, res) => {
         // Get user's promotion code
         const { data: user, error: userError } = await db.from('users').select('promotion_code').eq('id', userId).maybeSingle();
         
+        let promoCode = user?.promotion_code;
+        if (!promoCode) {
+            // Automatically generate one if it's missing (e.g. for accounts created before the feature)
+            promoCode = `REF${Math.random().toString(36).substring(2, 8)}`.toUpperCase();
+            await db.from('users').update({ promotion_code: promoCode }).eq('id', userId);
+        }
+
         res.json({
             success: true,
             total_earned: totalEarned,
             referrals_count: referralCount,
-            promotion_code: user?.promotion_code || 'N/A'
+            promotion_code: promoCode
         });
     } catch (err) {
         console.error('❌ [Auth/Commissions] error:', err.message);
