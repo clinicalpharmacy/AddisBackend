@@ -606,9 +606,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const detail = rec ? `${msg} ${rec}` : msg;
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
             
-            // Check for drug interactions (only if rule is meant for interactions)
+            const lowerRuleName = String(rule.rule_name).toLowerCase();
+            const lowerRuleType = String(rule.rule_type).toLowerCase();
+
+            // Check for drug interactions
             // Drug Interactions: rule_type contains "drug_interaction" OR rule_name contains "interaction"
-            if (rule.rule_type === 'drug_interaction' || String(rule.rule_name).toLowerCase().includes('interaction')) {
+            if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
@@ -622,13 +625,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 });
             }
 
-            // FIXED: Check for IV incompatibility
-            // IV Incompatibility: rule_name contains "IV Drug Incompatibility" AND rule_type contains "Drug Interaction (Safety)"
-            const ruleNameLower = String(rule.rule_name).toLowerCase();
-            const ruleTypeLower = String(rule.rule_type).toLowerCase();
-            
-            if (ruleNameLower.includes('iv drug incompatibility') && 
-                (ruleTypeLower.includes('drug interaction (safety)') || ruleTypeLower.includes('drug interaction'))) {
+            // Check for IV incompatibility
+            // IV Incompatibility: rule_type === "IV Incompatibility" OR rule_name contains "IV Drug Incompatibility"
+            if (lowerRuleType === 'iv incompatibility' || 
+                lowerRuleName.includes('iv drug incompatibility') || 
+                lowerRuleName.includes('iv incompatibility')) {
+                
+                console.log(`✅ Found IV Incompatibility rule: ${rule.rule_name} (Type: ${rule.rule_type})`);
                 
                 let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 incompatBlocks.forEach(block => {
@@ -637,14 +640,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     if (involvesTargetMed) {
                         const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
                         otherMedsInBlock.forEach(i => {
-                            safetyProfile.iv_incompatibility.push(`${i.value} — ${msg}`);
+                            const incompatMsg = `${i.value} — ${msg}`;
+                            console.log(`   Adding IV incompatibility: ${incompatMsg}`);
+                            safetyProfile.iv_incompatibility.push(incompatMsg);
                         });
                     }
                 });
             }
-
-            const lowerRuleName = String(rule.rule_name).toLowerCase();
-            const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // Check for pregnancy
             if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'pregnancy'))) {
@@ -693,6 +695,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
         safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
+
+        // Log the results for debugging
+        console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
+        console.log(`✅ Major Interactions found: ${safetyProfile.major_interactions.length}`);
 
         res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
 
