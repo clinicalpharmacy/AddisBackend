@@ -547,7 +547,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 liver_failure: { status: 'Safe', details: 'No known contraindications in database.' }
             },
             major_interactions: [],
-            iv_incompatibility: [] // ADDED: IV Drug Incompatibility array
+            iv_incompatibility: []
         };
 
         /**
@@ -607,6 +607,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
             
             // Check for drug interactions (only if rule is meant for interactions)
+            // Drug Interactions: rule_type contains "drug_interaction" OR rule_name contains "interaction"
             if (rule.rule_type === 'drug_interaction' || String(rule.rule_name).toLowerCase().includes('interaction')) {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
@@ -621,8 +622,14 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 });
             }
 
-            // ADDED: Check for IV incompatibility
-            if (rule.rule_type === 'iv_incompatibility' || String(rule.rule_name).toLowerCase().includes('iv incompatibility') || String(rule.rule_name).toLowerCase().includes('iv incompatible')) {
+            // FIXED: Check for IV incompatibility
+            // IV Incompatibility: rule_name contains "IV Drug Incompatibility" AND rule_type contains "Drug Interaction (Safety)"
+            const ruleNameLower = String(rule.rule_name).toLowerCase();
+            const ruleTypeLower = String(rule.rule_type).toLowerCase();
+            
+            if (ruleNameLower.includes('iv drug incompatibility') && 
+                (ruleTypeLower.includes('drug interaction (safety)') || ruleTypeLower.includes('drug interaction'))) {
+                
                 let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 incompatBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
@@ -685,7 +692,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         
         // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
-        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)]; // ADDED: Remove duplicates from IV incompatibilities
+        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
 
         res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
 
