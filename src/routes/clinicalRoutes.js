@@ -546,7 +546,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 kidney_failure: { status: 'Safe', details: 'No known contraindications in database.' },
                 liver_failure: { status: 'Safe', details: 'No known contraindications in database.' }
             },
-            major_interactions: []
+            major_interactions: [],
+            iv_incompatibility: [] // ADDED: IV Drug Incompatibility array
         };
 
         /**
@@ -620,6 +621,21 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 });
             }
 
+            // ADDED: Check for IV incompatibility
+            if (rule.rule_type === 'iv_incompatibility' || String(rule.rule_name).toLowerCase().includes('iv incompatibility') || String(rule.rule_name).toLowerCase().includes('iv incompatible')) {
+                let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
+                incompatBlocks.forEach(block => {
+                    const blockFacts = collectFacts(block);
+                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
+                    if (involvesTargetMed) {
+                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
+                        otherMedsInBlock.forEach(i => {
+                            safetyProfile.iv_incompatibility.push(`${i.value} — ${msg}`);
+                        });
+                    }
+                });
+            }
+
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
@@ -667,13 +683,14 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
         });
         
-        // Remove duplicates from interactions
+        // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
+        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)]; // ADDED: Remove duplicates from IV incompatibilities
 
         res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
 
     } catch (e) {
-        console.error('\u274c Quick Safety Error:', e);
+        console.error('❌ Quick Safety Error:', e);
         res.status(500).json({ success: false, error: 'Failed to retrieve safety profile' });
     }
 });
@@ -1043,4 +1060,3 @@ router.delete('/reconciliations/:id', authenticateToken, async (req, res) => {
 });
 
 export default router;
-
