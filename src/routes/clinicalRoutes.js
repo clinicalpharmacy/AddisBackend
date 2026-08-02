@@ -569,6 +569,14 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
+        // Helper to get all medication names from a condition block
+        const getMedicationNames = (block) => {
+            const facts = collectFacts(block);
+            return facts
+                .filter(f => f.fact === 'medications' && f.value)
+                .map(f => f.value);
+        };
+
         // Helper to check if a condition targets this medication
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
@@ -609,24 +617,27 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
-            // Check for drug interactions
-            // Drug Interactions: rule_type contains "drug_interaction" OR rule_name contains "interaction"
+            // ============================================
+            // Check for Drug Interactions - FORMATTED AS DRUG-DRUG COMBINATION
+            // ============================================
             if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
                     const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
                     if (involvesTargetMed) {
-                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
-                        otherMedsInBlock.forEach(i => {
-                            safetyProfile.major_interactions.push(`${i.value} — ${msg}`);
-                        });
+                        // Get ALL medication names from this block
+                        const allMedsInBlock = getMedicationNames(block);
+                        // Format as "DrugA + DrugB"
+                        const combo = allMedsInBlock.join(' + ');
+                        safetyProfile.major_interactions.push(combo);
                     }
                 });
             }
 
-            // Check for IV incompatibility
-            // IV Incompatibility: rule_type === "IV Incompatibility" OR rule_name contains "IV Drug Incompatibility"
+            // ============================================
+            // Check for IV Incompatibility - FORMATTED AS DRUG-DRUG COMBINATION
+            // ============================================
             if (lowerRuleType === 'iv incompatibility' || 
                 lowerRuleName.includes('iv drug incompatibility') || 
                 lowerRuleName.includes('iv incompatibility')) {
@@ -638,12 +649,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     const blockFacts = collectFacts(block);
                     const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
                     if (involvesTargetMed) {
-                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
-                        otherMedsInBlock.forEach(i => {
-                            const incompatMsg = `${i.value} — ${msg}`;
-                            console.log(`   Adding IV incompatibility: ${incompatMsg}`);
-                            safetyProfile.iv_incompatibility.push(incompatMsg);
-                        });
+                        // Get ALL medication names from this block
+                        const allMedsInBlock = getMedicationNames(block);
+                        // Format as "DrugA + DrugB"
+                        const combo = allMedsInBlock.join(' + ');
+                        console.log(`   Adding IV incompatibility: ${combo}`);
+                        safetyProfile.iv_incompatibility.push(combo);
                     }
                 });
             }
