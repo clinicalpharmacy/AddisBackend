@@ -577,9 +577,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
-<<<<<<< HEAD
-        // Helper to check if a condition targets ANY of the provided medications
-=======
         // Helper to get all medication names from a condition block
         const getMedicationNames = (block) => {
             const facts = collectFacts(block);
@@ -588,8 +585,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 .map(f => f.value);
         };
 
-        // Helper to check if a condition targets this medication
->>>>>>> dc54b9d6134d0cc994fad2fdade7892f63d0fa13
+        // Helper to check if a condition targets ANY of the provided medications
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
             return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
@@ -626,9 +622,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const detail = rec ? `${msg} ${rec}` : msg;
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
             
-<<<<<<< HEAD
-            if (rule.rule_type === 'drug_interaction' || String(rule.rule_name).toLowerCase().includes('interaction')) {
-=======
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
@@ -636,30 +629,23 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             // Check for Drug Interactions - FORMATTED AS DRUG-DRUG COMBINATION
             // ============================================
             if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
->>>>>>> dc54b9d6134d0cc994fad2fdade7892f63d0fa13
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
                     const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
                     if (involvesTargetMed) {
-<<<<<<< HEAD
-                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !meds.some(m => String(f.value).toLowerCase().includes(m)));
-                        otherMedsInBlock.forEach(i => {
-                            safetyProfile.major_interactions.push(`${i.value} — ${msg}`);
-                        });
+                        // Get ALL medication names from this block
+                        const allMedsInBlock = getMedicationNames(block);
+                        // Format as "DrugA + DrugB"
+                        const combo = allMedsInBlock.join(' + ');
                         
                         // Also, if the rule triggers specifically BETWEEN two medications we entered, add that explicitly!
                         const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
                         if (matchedEnteredMeds.length > 1) {
                             safetyProfile.major_interactions.push(`⚠️ INTERNAL INTERACTION between ${matchedEnteredMeds.map(m => m.value).join(' and ')} — ${msg}`);
+                        } else {
+                            safetyProfile.major_interactions.push(combo);
                         }
-=======
-                        // Get ALL medication names from this block
-                        const allMedsInBlock = getMedicationNames(block);
-                        // Format as "DrugA + DrugB"
-                        const combo = allMedsInBlock.join(' + ');
-                        safetyProfile.major_interactions.push(combo);
->>>>>>> dc54b9d6134d0cc994fad2fdade7892f63d0fa13
                     }
                 });
             }
