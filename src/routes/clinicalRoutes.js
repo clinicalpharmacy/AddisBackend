@@ -521,8 +521,18 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
-        const { medication } = req.body;
-        if (!medication) return res.status(400).json({ success: false, error: 'Medication required' });
+        const { medication, medications: medList } = req.body;
+        
+        // Support either a single medication string or an array of medications
+        let meds = [];
+        if (medList && Array.isArray(medList) && medList.length > 0) {
+            meds = medList.map(m => m.toLowerCase().trim());
+        } else if (medication) {
+            // Split by comma if user typed multiple in one string, just in case
+            meds = medication.split(',').map(m => m.toLowerCase().trim()).filter(Boolean);
+        }
+
+        if (meds.length === 0) return res.status(400).json({ success: false, error: 'Medication required' });
 
         const targetDb = supabaseAdmin || supabase;
         const { data: rules, error } = await targetDb
@@ -532,12 +542,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
-        const medName = medication.toLowerCase().trim();
-        
         // Base safety profile structure
         const safetyProfile = {
-            medication: medication,
-            general_overview: `Safety profile derived from clinical rules database for ${medication}.`,
+            medication: meds.join(', '),
+            general_overview: `Safety profile derived from clinical rules database for ${meds.join(', ')}.`,
             categories: {
                 pregnancy: { status: 'Safe', details: 'No known contraindications in database.' },
                 lactation: { status: 'Safe', details: 'No known contraindications in database.' },
@@ -568,10 +576,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
-        // Helper to check if a condition targets this medication
+        // Helper to check if a condition targets ANY of the provided medications
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
-            return facts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
+            return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
         };
 
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
@@ -605,17 +613,22 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const detail = rec ? `${msg} ${rec}` : msg;
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
             
-            // Check for drug interactions (only if rule is meant for interactions)
             if (rule.rule_type === 'drug_interaction' || String(rule.rule_name).toLowerCase().includes('interaction')) {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
-                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && String(f.value).toLowerCase().includes(medName));
+                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
                     if (involvesTargetMed) {
-                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !String(f.value).toLowerCase().includes(medName));
+                        const otherMedsInBlock = blockFacts.filter(f => f.fact === 'medications' && f.value && !meds.some(m => String(f.value).toLowerCase().includes(m)));
                         otherMedsInBlock.forEach(i => {
                             safetyProfile.major_interactions.push(`${i.value} — ${msg}`);
                         });
+                        
+                        // Also, if the rule triggers specifically BETWEEN two medications we entered, add that explicitly!
+                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
+                        if (matchedEnteredMeds.length > 1) {
+                            safetyProfile.major_interactions.push(`⚠️ INTERNAL INTERACTION between ${matchedEnteredMeds.map(m => m.value).join(' and ')} — ${msg}`);
+                        }
                     }
                 });
             }
