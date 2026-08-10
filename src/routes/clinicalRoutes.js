@@ -582,7 +582,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const facts = collectFacts(block);
             return facts
                 .filter(f => f.fact === 'medications' && f.value)
-                .map(f => String(f.value).toLowerCase());
+                .map(f => f.value);
         };
 
         // Helper to check if a condition targets ANY of the provided medications
@@ -646,7 +646,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // ============================================
-            // Check for Drug Interactions - FIXED: Shows ALL medications in the combination
+            // Check for Drug Interactions - FORMATTED AS DRUG-DRUG COMBINATION
             // ============================================
             if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
@@ -654,25 +654,18 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     const blockFacts = collectFacts(block);
                     const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
                     if (involvesTargetMed) {
-                        // ✅ Get ALL medications from the block (not just user's medications)
-                        const allMedsInBlock = getMedicationNames(block);
-                        
-                        if (allMedsInBlock.length > 0) {
-                            // Create a display string showing ALL involved medications
-                            const displayMeds = allMedsInBlock.join(' + ');
-                            const interactionMsg = `⚠️ INTERACTION: ${displayMeds} — ${msg}`;
-                            
-                            // Only add if not already present
-                            if (!safetyProfile.major_interactions.includes(interactionMsg)) {
-                                safetyProfile.major_interactions.push(interactionMsg);
-                            }
+                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m))).map(f => f.value);
+                        if (matchedEnteredMeds.length > 1) {
+                            safetyProfile.major_interactions.push(`⚠️ INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
+                        } else if (matchedEnteredMeds.length === 1) {
+                            safetyProfile.major_interactions.push(`⚠️ ${matchedEnteredMeds[0]} interaction — ${msg}`);
                         }
                     }
                 });
             }
 
             // ============================================
-            // Check for IV Incompatibility - FIXED: Shows ALL medications in the combination
+            // Check for IV Incompatibility - FORMATTED AS DRUG-DRUG COMBINATION
             // ============================================
             if (lowerRuleType === 'iv incompatibility' || 
                 lowerRuleName.includes('iv drug incompatibility') || 
@@ -683,16 +676,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     const blockFacts = collectFacts(block);
                     const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
                     if (involvesTargetMed) {
-                        // ✅ Get ALL medications from the block
-                        const allMedsInBlock = getMedicationNames(block);
-                        
-                        if (allMedsInBlock.length > 0) {
-                            const displayMeds = allMedsInBlock.join(' + ');
-                            const incompatMsg = `⚠️ INCOMPATIBLE: ${displayMeds}`;
-                            
-                            if (!safetyProfile.iv_incompatibility.includes(incompatMsg)) {
-                                safetyProfile.iv_incompatibility.push(incompatMsg);
-                            }
+                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m))).map(f => f.value);
+                        if (matchedEnteredMeds.length > 1) {
+                            safetyProfile.iv_incompatibility.push(`⚠️ INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
+                        } else if (matchedEnteredMeds.length === 1) {
+                            safetyProfile.iv_incompatibility.push(`⚠️ ${matchedEnteredMeds[0]} IV incompatibility — ${msg}`);
                         }
                     }
                 });
