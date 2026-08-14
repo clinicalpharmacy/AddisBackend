@@ -452,9 +452,14 @@ router.post('/register', async (req, res) => {
 
         if (!skip_verification_email) {
             // Send verification email (don't wait for it to complete)
-            sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken).catch(err => {
-                console.error('Failed to send verification email:', err);
-            });
+            sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken)
+                .then(sent => {
+                    if (sent) console.log(`✅ [Registration] Verification email successfully sent to ${trimmedEmail}`);
+                    else console.error(`❌ [Registration] Failed to send verification email to ${trimmedEmail}`);
+                })
+                .catch(err => {
+                    console.error('❌ [Registration] Error sending verification email:', err);
+                });
         }
 
         res.status(201).json({
@@ -589,9 +594,14 @@ router.post('/register-company', async (req, res) => {
 
         if (!skip_verification_email) {
             // Send verification email to admin (don't wait for it to complete)
-            sendVerificationEmail(trimmedAdminEmail, admin_full_name.trim(), verificationToken).catch(err => {
-                console.error('Failed to send verification email:', err);
-            });
+            sendVerificationEmail(trimmedAdminEmail, admin_full_name.trim(), verificationToken)
+                .then(sent => {
+                    if (sent) console.log(`✅ [Company Registration] Verification email successfully sent to ${trimmedAdminEmail}`);
+                    else console.error(`❌ [Company Registration] Failed to send verification email to ${trimmedAdminEmail}`);
+                })
+                .catch(err => {
+                    console.error('❌ [Company Registration] Error sending verification email:', err);
+                });
         }
 
         res.status(201).json({
@@ -818,13 +828,16 @@ router.post('/forgot-password', async (req, res) => {
             reset_password_expires: expires
         }).eq('id', user.id);
 
-        // In a real app, send email here.
-        // console.log(`Reset token for ${email}: ${token}`);
+        // Send the reset email
+        const emailSent = await sendPasswordResetEmail(cleanEmail, user.full_name || 'User', token);
+        
+        if (!emailSent) {
+            return res.status(500).json({ success: false, error: 'Failed to send password reset email. Please try again later.' });
+        }
 
         res.json({
             success: true,
-            message: 'Reset token generated.',
-            reset_token: token
+            message: 'A password reset link has been sent to your email.'
         });
     } catch (e) {
         console.error('Forgot password error:', e);
@@ -1027,25 +1040,7 @@ router.post('/resend-verification', async (req, res) => {
             });
         }
 
-        // ENFORCE: Verification only after payment
-        let hasPaid = user.subscription_status === 'active';
-
-        // If it's a company user, they don't pay individually, but their company must have a subscription
-        if (!hasPaid && table === 'company_users' && user.company_id) {
-            const { data: comp } = await db.from('companies').select('subscription_status').eq('id', user.company_id).maybeSingle();
-            if (comp?.subscription_status === 'active') {
-                hasPaid = true;
-            }
-        }
-
-        if (!hasPaid) {
-            return res.status(403).json({
-                success: false,
-                error: 'Verification email can only be sent after a successful subscription payment. Please complete your payment first.'
-            });
-        }
-
-        // Check if already verified
+        // Removed payment check here to allow resending verification emails before payment, matching the new registration flow.
         if (user.email_verified) {
             return res.json({
                 success: true,

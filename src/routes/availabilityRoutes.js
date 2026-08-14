@@ -29,8 +29,9 @@ router.get('/medication-availability', authenticateToken, async (req, res) => {
                 user:user_id (
                     full_name,
                     institution,
-                    location,
-                    contact_number,
+                    region,
+                    woreda,
+                    phone,
                     email
                 )
             `)
