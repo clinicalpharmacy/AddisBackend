@@ -1077,7 +1077,7 @@ router.post('/resend-verification', async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Verification email sent! Please check your inbox.'
+            message: `Verification email sent! Link: ${config.frontendUrl}/verify-email?token=${verificationToken}`
         });
     } catch (e) {
         console.error('Resend verification error:', e);
