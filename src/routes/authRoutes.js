@@ -1033,10 +1033,10 @@ router.post('/resend-verification', async (req, res) => {
         }
 
         if (!user) {
-            // For security, don't reveal if user exists
+            console.error('Resend verification failed: User not found in database for email:', cleanEmail);
             return res.json({
-                success: true,
-                message: 'If an account exists with this email, a verification link has been sent.'
+                success: false,
+                error: 'User not found in the database. Please check the email address.'
             });
         }
 
