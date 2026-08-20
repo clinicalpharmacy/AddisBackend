@@ -1054,11 +1054,16 @@ router.post('/resend-verification', async (req, res) => {
         const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
 
         // Update user with new token
-        await db.from(table).update({
+        const { error: updateError } = await db.from(table).update({
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
             updated_at: new Date().toISOString()
         }).eq('id', user.id);
+
+        if (updateError) {
+            console.error('Failed to update verification token:', updateError);
+            return res.status(500).json({ success: false, error: 'Database update failed. Cannot generate new token.' });
+        }
 
         // Send verification email
         const emailSent = await sendVerificationEmail(cleanEmail, user.full_name, verificationToken);
