@@ -714,13 +714,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                                 if (uniqueSearchedInBlock.length >= 2) {
                                     // User actually searched for 2+ different medications
                                     interactionText =
-                                        `⚠️ ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
+                                        ` ${uniqueSearchedInBlock.map(capitalizeMedication).join(' + ')} — ${msg}`;
                             
                                 } else if (uniqueSearchedInBlock.length === 1) {
                                     // User searched for ONE medication.
                                     // Show it once, then show the OTHER medications involved.
                             
-                                    const searchedDrug = uniqueSearchedInBlock[0];
+                                    const searchedDrug = capitalizeMedication(uniqueSearchedInBlock[0]);
                             
                                     const otherDrugs = allDrugs.filter(ruleDrug => {
                                         const ruleDrugLower = ruleDrug.toLowerCase();
@@ -746,16 +746,16 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             
                                     if (uniqueOtherDrugs.length > 0) {
                                         interactionText =
-                                            `⚠️ ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
+                                            ` ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
                                     } else {
                                         interactionText =
-                                            `⚠️ ${searchedDrug} — ${msg}`;
+                                            ` ${searchedDrug} — ${msg}`;
                                     }
                             
                                 } else {
                                     // Fallback
                                     interactionText =
-                                        `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
+                                        ` ${allDrugs.join(' + ')} — ${msg}`;
                                 }
                             }
                             
@@ -842,11 +842,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                                 if (uniqueSearchedInBlock.length >= 2) {
                                     // User searched for 2+ different incompatible medications
                                     incompatText =
-                                        `🔴 ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
+                                        ` ${uniqueSearchedInBlock.map(capitalizeMedication).join(' + ')} — ${msg}`;
                             
                                 } else if (uniqueSearchedInBlock.length === 1) {
                                     // User searched for ONE medication
-                                    const searchedDrug = uniqueSearchedInBlock[0];
+                                    const searchedDrug = capitalizeMedication(uniqueSearchedInBlock[0]);
                             
                                     // Remove all rule entries that represent the searched medication
                                     const otherDrugs = allDrugs.filter(ruleDrug => {
@@ -871,16 +871,16 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             
                                     if (uniqueOtherDrugs.length > 0) {
                                         incompatText =
-                                            `🔴 ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
+                                            ` ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
                                     } else {
                                         incompatText =
-                                            `🔴 ${searchedDrug} — ${msg}`;
+                                            ` ${searchedDrug} — ${msg}`;
                                     }
                             
                                 } else {
                                     // Fallback
                                     incompatText =
-                                        `🔴 ${allDrugs.join(' + ')} — ${msg}`;
+                                        ` ${allDrugs.join(' + ')} — ${msg}`;
                                 }
                             }
                             
