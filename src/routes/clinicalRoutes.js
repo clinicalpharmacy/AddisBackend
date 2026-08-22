@@ -655,19 +655,19 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
-                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                    const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
                         const ruleVal = String(f.value).toLowerCase();
                         return ruleVal.includes(m) || m.includes(ruleVal);
-                    }));
-                    if (involvesTargetMed) {
-                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
-                            const ruleVal = String(f.value).toLowerCase();
-                            return ruleVal.includes(m) || m.includes(ruleVal);
-                        })).map(f => f.value);
+                    })).map(f => f.value);
+                    
+                    // FIXED: Capture ALL matched medications, regardless of count
+                    if (matchedEnteredMeds.length > 0) {
                         if (matchedEnteredMeds.length > 1) {
+                            // Multi-drug combination interaction
                             safetyProfile.major_interactions.push(`⚠️ INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
-                        } else if (matchedEnteredMeds.length === 1) {
-                            safetyProfile.major_interactions.push(`⚠️ ${matchedEnteredMeds[0]} interaction — ${msg}`);
+                        } else {
+                            // Single medication interaction (now properly captured)
+                            safetyProfile.major_interactions.push(`⚠️ ${matchedEnteredMeds[0]}: ${msg}`);
                         }
                     }
                 });
@@ -683,18 +683,18 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 incompatBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
-                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                    const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
                         const ruleVal = String(f.value).toLowerCase();
                         return ruleVal.includes(m) || m.includes(ruleVal);
-                    }));
-                    if (involvesTargetMed) {
-                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
-                            const ruleVal = String(f.value).toLowerCase();
-                            return ruleVal.includes(m) || m.includes(ruleVal);
-                        })).map(f => f.value);
+                    })).map(f => f.value);
+                    
+                    // FIXED: Capture ALL matched medications, regardless of count
+                    if (matchedEnteredMeds.length > 0) {
                         if (matchedEnteredMeds.length > 1) {
+                            // Multi-drug incompatibility
                             safetyProfile.iv_incompatibility.push(`⚠️ INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
-                        } else if (matchedEnteredMeds.length === 1) {
+                        } else {
+                            // Single medication IV incompatibility (now properly captured)
                             safetyProfile.iv_incompatibility.push(`⚠️ ${matchedEnteredMeds[0]} IV incompatibility — ${msg}`);
                         }
                     }
@@ -702,12 +702,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
 
             // Check for pregnancy
-            if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'pregnancy'))) {
+            if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
                 safetyProfile.categories.pregnancy = { status, details: detail };
             }
 
             // Check for lactation
-            if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'lactation') || (f.fact === 'conditions' && String(f.value).toLowerCase() === 'breastfeeding'))) {
+            if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
                 safetyProfile.categories.lactation = { status, details: detail };
             }
 
