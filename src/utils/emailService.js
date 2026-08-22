@@ -28,7 +28,7 @@ export const sendVerificationEmail = async (email, name, verificationToken) => {
         const verificationUrl = `${config.frontendUrl}/verify-email?token=${verificationToken}`;
 
         const mailOptions = {
-            from: `"Addis Clinical Pharmacy" <${config.emailUser === 'resend' ? 'onboarding@resend.dev' : config.emailUser}>`,
+            from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,
             subject: 'Verify Your Email - Addis Clinical Pharmacy',
             html: `
@@ -144,7 +144,7 @@ export const sendPasswordResetEmail = async (email, name, resetToken) => {
         const resetUrl = `${config.frontendUrl}/reset-password?token=${resetToken}`;
 
         const mailOptions = {
-            from: `"Addis Clinical Pharmacy" <${config.emailUser === 'resend' ? 'onboarding@resend.dev' : config.emailUser}>`,
+            from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,
             subject: 'Password Reset Request - Addis Clinical Pharmacy',
             html: `
@@ -252,7 +252,7 @@ export const sendWelcomeEmail = async (email, name) => {
         const transporter = createTransporter();
 
         const mailOptions = {
-            from: `"Addis Clinical Pharmacy" <${config.emailUser === 'resend' ? 'onboarding@resend.dev' : config.emailUser}>`,
+            from: `"Addis Clinical Pharmacy" <${config.emailUser}>`,
             to: email,
             subject: 'Welcome to Addis Clinical Pharmacy!',
             html: `
