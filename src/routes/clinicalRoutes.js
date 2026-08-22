@@ -620,6 +620,25 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return foundMeds;
         };
 
+        // Helper: get ONLY the searched medications that match the condition
+        const getMatchingSearchedMeds = (condition) => {
+            const facts = collectFacts(condition);
+            const matchedMeds = [];
+            facts.forEach(f => {
+                if (f.fact === 'medications' && f.value) {
+                    const ruleVal = String(f.value).toLowerCase().trim();
+                    meds.forEach(searchMed => {
+                        if (ruleVal.includes(searchMed) || searchMed.includes(ruleVal)) {
+                            if (!matchedMeds.includes(searchMed)) {
+                                matchedMeds.push(searchMed);
+                            }
+                        }
+                    });
+                }
+            });
+            return matchedMeds;
+        };
+
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
         const isElderlyCheck = (f) => {
             if (f.fact !== 'age') return false;
@@ -686,9 +705,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
-            // Get the medications involved in this rule
-            const ruleMeds = getMedicationsFromCondition(cond);
-            const medsStr = ruleMeds.length > 0 ? ` [${ruleMeds.join(', ')}]` : '';
+            // Get ONLY the searched medications that match this rule
+            const matchedSearchedMeds = getMatchingSearchedMeds(cond);
+            const medsStr = matchedSearchedMeds.length > 0 ? ` [${matchedSearchedMeds.join(', ')}]` : '';
 
             // ============================================
             // Handle Drug Interactions - ONLY for multiple drugs
@@ -703,20 +722,20 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
                 
                 // Find which searched medications are in this rule
-                const matchedSearchedMeds = meds.filter(searchMed => 
+                const matchedSearchedMedsForInteraction = meds.filter(searchMed => 
                     allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
                 );
                 
                 // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMeds.length >= 2;
+                const shouldShow = matchedSearchedMedsForInteraction.length >= 2;
                 
                 if (shouldShow) {
                     // Create pairs of searched drugs that are both in the rule
                     const interactions = [];
-                    for (let i = 0; i < matchedSearchedMeds.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMeds.length; j++) {
-                            const med1 = matchedSearchedMeds[i];
-                            const med2 = matchedSearchedMeds[j];
+                    for (let i = 0; i < matchedSearchedMedsForInteraction.length; i++) {
+                        for (let j = i + 1; j < matchedSearchedMedsForInteraction.length; j++) {
+                            const med1 = matchedSearchedMedsForInteraction[i];
+                            const med2 = matchedSearchedMedsForInteraction[j];
                             // Check if both are in the rule
                             const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
                             const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
@@ -753,20 +772,20 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
                 
                 // Find which searched medications are in this rule
-                const matchedSearchedMeds = meds.filter(searchMed => 
+                const matchedSearchedMedsForIncompat = meds.filter(searchMed => 
                     allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
                 );
                 
                 // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMeds.length >= 2;
+                const shouldShow = matchedSearchedMedsForIncompat.length >= 2;
                 
                 if (shouldShow) {
                     // Create pairs of searched drugs that are both in the rule
                     const incompatibilities = [];
-                    for (let i = 0; i < matchedSearchedMeds.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMeds.length; j++) {
-                            const med1 = matchedSearchedMeds[i];
-                            const med2 = matchedSearchedMeds[j];
+                    for (let i = 0; i < matchedSearchedMedsForIncompat.length; i++) {
+                        for (let j = i + 1; j < matchedSearchedMedsForIncompat.length; j++) {
+                            const med1 = matchedSearchedMedsForIncompat[i];
+                            const med2 = matchedSearchedMedsForIncompat[j];
                             // Check if both are in the rule
                             const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
                             const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
@@ -790,43 +809,43 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 }
             }
 
-            // Check for pregnancy - show medications in brackets
+            // Check for pregnancy - show ONLY searched medications in brackets
             if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
                 safetyProfile.categories.pregnancy = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
 
-            // Check for lactation - show medications in brackets
+            // Check for lactation - show ONLY searched medications in brackets
             if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
                 safetyProfile.categories.lactation = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
 
-            // Check for elderly - show medications in brackets
+            // Check for elderly - show ONLY searched medications in brackets
             if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
                 safetyProfile.categories.elderly = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
 
-            // Check for neonates/pediatrics - show medications in brackets
+            // Check for neonates/pediatrics - show ONLY searched medications in brackets
             if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
                 safetyProfile.categories.neonate = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
 
-            // Check for kidney failure - show medications in brackets
+            // Check for kidney failure - show ONLY searched medications in brackets
             if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f => 
                 f.fact === 'labs.creatinine_clearance' || f.fact === 'labs.egfr' || f.fact === 'labs.serum_creatinine' ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) || 
@@ -837,11 +856,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 safetyProfile.categories.kidney_failure = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
 
-            // Check for liver failure - show medications in brackets
+            // Check for liver failure - show ONLY searched medications in brackets
             if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f => 
                 f.fact === 'labs.total_bilirubin' || f.fact === 'labs.ast' || f.fact === 'labs.alt' || f.fact === 'labs.inr' ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) || 
@@ -853,7 +872,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 safetyProfile.categories.liver_failure = { 
                     status, 
                     details: detail + medsStr,
-                    medications: ruleMeds
+                    medications: matchedSearchedMeds
                 };
             }
         });
