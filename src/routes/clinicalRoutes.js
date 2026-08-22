@@ -518,6 +518,10 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * Quick Safety Check (Database-driven instead of AI)
  * Supports nested rule_condition structures like:
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
+ * 
+ * ENHANCED: Now properly captures interactions and IV incompatibilities for:
+ * - Single drug searches (shows all interactions involving that drug)
+ * - Multi-drug searches (shows interactions involving the searched drugs)
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -578,11 +582,18 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         // Helper to get all medication names from a condition block
-        const getMedicationNames = (block) => {
+        const getAllMedicationsInBlock = (block) => {
             const facts = collectFacts(block);
-            return facts
-                .filter(f => f.fact === 'medications' && f.value)
-                .map(f => f.value);
+            const meds = [];
+            facts.forEach(f => {
+                if (f.fact === 'medications' && f.value) {
+                    const val = String(f.value);
+                    if (!meds.includes(val)) {
+                        meds.push(val);
+                    }
+                }
+            });
+            return meds;
         };
 
         // Helper to check if a condition targets ANY of the provided medications
@@ -592,23 +603,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const ruleVal = String(f.value).toLowerCase();
                 return ruleVal.includes(m) || m.includes(ruleVal);
             }));
-        };
-
-        // Helper to get matching medications from the user input
-        const getMatchedMedications = (condition) => {
-            const facts = collectFacts(condition);
-            const matched = [];
-            facts.forEach(f => {
-                if (f.fact === 'medications' && f.value) {
-                    const ruleVal = String(f.value).toLowerCase();
-                    meds.forEach(m => {
-                        if ((ruleVal.includes(m) || m.includes(ruleVal)) && !matched.includes(m)) {
-                            matched.push(m);
-                        }
-                    });
-                }
-            });
-            return matched;
         };
 
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
@@ -635,93 +629,194 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const cond = rule.rule_condition;
             if (!hasMedication(cond)) return;
 
-            const matchedMeds = getMatchedMedications(cond);
-            const prefix = matchedMeds.length > 0 ? `[${matchedMeds.join(', ')}] ` : '';
-
             const allFacts = collectFacts(cond);
             const severity = rule.severity;
             const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
             const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
-            const detail = prefix + (rec ? `${msg} ${rec}` : msg);
+            const detail = (rec ? `${msg} ${rec}` : msg);
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
             
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // ============================================
-            // Check for Drug Interactions - FORMATTED AS DRUG-DRUG COMBINATION
+            // ENHANCED: Drug Interactions
+            // Captures both single-drug and multi-drug interactions
             // ============================================
             if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
-                let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
+                // Get the interaction condition blocks
+                let interactionBlocks = [];
+                if (Array.isArray(rule.rule_condition?.any)) {
+                    interactionBlocks = rule.rule_condition.any;
+                } else if (rule.rule_condition) {
+                    interactionBlocks = [rule.rule_condition];
+                }
+                
                 interactionBlocks.forEach(block => {
-                    const blockFacts = collectFacts(block);
-                    const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
-                        const ruleVal = String(f.value).toLowerCase();
-                        return ruleVal.includes(m) || m.includes(ruleVal);
-                    })).map(f => f.value);
+                    // Get ALL medications in this block
+                    const blockMeds = getAllMedicationsInBlock(block);
                     
-                    // FIXED: Capture ALL matched medications, regardless of count
-                    if (matchedEnteredMeds.length > 0) {
-                        if (matchedEnteredMeds.length > 1) {
-                            // Multi-drug combination interaction
-                            safetyProfile.major_interactions.push(`INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
-                        } else {
-                            // Single medication interaction (now properly captured)
-                            safetyProfile.major_interactions.push(`${matchedEnteredMeds[0]}: ${msg}`);
+                    // Check if ANY of the user's medications match this block
+                    const hasMatch = blockMeds.some(ruleMed => 
+                        meds.some(userMed => 
+                            String(ruleMed).toLowerCase().includes(userMed) || 
+                            userMed.includes(String(ruleMed).toLowerCase())
+                        )
+                    );
+                    
+                    if (hasMatch) {
+                        // Find which user medications matched
+                        const matchedUserMeds = meds.filter(userMed =>
+                            blockMeds.some(ruleMed =>
+                                String(ruleMed).toLowerCase().includes(userMed) ||
+                                userMed.includes(String(ruleMed).toLowerCase())
+                            )
+                        );
+                        
+                        // Get all medications from the rule that relate to the matched ones
+                        const relatedRuleMeds = blockMeds.filter(ruleMed =>
+                            matchedUserMeds.some(userMed =>
+                                String(ruleMed).toLowerCase().includes(userMed) ||
+                                userMed.includes(String(ruleMed).toLowerCase())
+                            )
+                        );
+                        
+                        // If we have at least one matched medication, show the interaction
+                        if (matchedUserMeds.length > 0) {
+                            let interactionText = '';
+                            
+                            if (blockMeds.length > 1) {
+                                // Multi-drug interaction - show all drugs in the rule
+                                const allDrugs = blockMeds.map(m => String(m));
+                                
+                                // Check if the user searched for multiple drugs that match this interaction
+                                const searchedInBlock = allDrugs.filter(d => 
+                                    meds.some(m => d.toLowerCase().includes(m) || m.includes(d.toLowerCase()))
+                                );
+                                
+                                if (searchedInBlock.length >= 2) {
+                                    // User searched for 2+ drugs that interact - highlight them
+                                    interactionText = `⚠️ ${searchedInBlock.join(' + ')} — ${msg}`;
+                                } else if (searchedInBlock.length === 1) {
+                                    // User searched for 1 drug - show the full interaction
+                                    // Find the other drug(s) in the interaction
+                                    const otherDrugs = allDrugs.filter(d => !searchedInBlock.some(s => d.toLowerCase().includes(s) || s.includes(d.toLowerCase())));
+                                    if (otherDrugs.length > 0) {
+                                        interactionText = `⚠️ ${searchedInBlock[0]} + ${otherDrugs.join(' + ')} — ${msg}`;
+                                    } else {
+                                        interactionText = `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
+                                    }
+                                } else {
+                                    // Fallback
+                                    interactionText = `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
+                                }
+                            } else {
+                                // Single drug interaction
+                                interactionText = `⚠️ ${blockMeds[0]}: ${msg}`;
+                            }
+                            
+                            safetyProfile.major_interactions.push(interactionText);
                         }
                     }
                 });
             }
 
             // ============================================
-            // Check for IV Incompatibility - FORMATTED AS DRUG-DRUG COMBINATION
+            // ENHANCED: IV Incompatibility
+            // Captures both single-drug and multi-drug incompatibilities
             // ============================================
             if (lowerRuleType === 'iv incompatibility' || 
                 lowerRuleName.includes('iv drug incompatibility') || 
                 lowerRuleName.includes('iv incompatibility')) {
                 
-                let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
+                let incompatBlocks = [];
+                if (Array.isArray(rule.rule_condition?.any)) {
+                    incompatBlocks = rule.rule_condition.any;
+                } else if (rule.rule_condition) {
+                    incompatBlocks = [rule.rule_condition];
+                }
+                
                 incompatBlocks.forEach(block => {
-                    const blockFacts = collectFacts(block);
-                    const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
-                        const ruleVal = String(f.value).toLowerCase();
-                        return ruleVal.includes(m) || m.includes(ruleVal);
-                    })).map(f => f.value);
+                    // Get ALL medications in this block
+                    const blockMeds = getAllMedicationsInBlock(block);
                     
-                    // FIXED: Capture ALL matched medications, regardless of count
-                    if (matchedEnteredMeds.length > 0) {
-                        if (matchedEnteredMeds.length > 1) {
-                            // Multi-drug incompatibility
-                            safetyProfile.iv_incompatibility.push(`INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
-                        } else {
-                            // Single medication IV incompatibility (now properly captured)
-                            safetyProfile.iv_incompatibility.push(`${matchedEnteredMeds[0]} IV incompatibility — ${msg}`);
+                    // Check if ANY of the user's medications match this block
+                    const hasMatch = blockMeds.some(ruleMed => 
+                        meds.some(userMed => 
+                            String(ruleMed).toLowerCase().includes(userMed) || 
+                            userMed.includes(String(ruleMed).toLowerCase())
+                        )
+                    );
+                    
+                    if (hasMatch) {
+                        // Find which user medications matched
+                        const matchedUserMeds = meds.filter(userMed =>
+                            blockMeds.some(ruleMed =>
+                                String(ruleMed).toLowerCase().includes(userMed) ||
+                                userMed.includes(String(ruleMed).toLowerCase())
+                            )
+                        );
+                        
+                        // If we have at least one matched medication, show the incompatibility
+                        if (matchedUserMeds.length > 0) {
+                            let incompatText = '';
+                            
+                            if (blockMeds.length > 1) {
+                                // Multi-drug incompatibility - show all drugs in the rule
+                                const allDrugs = blockMeds.map(m => String(m));
+                                
+                                // Check if the user searched for multiple drugs that are incompatible
+                                const searchedInBlock = allDrugs.filter(d => 
+                                    meds.some(m => d.toLowerCase().includes(m) || m.includes(d.toLowerCase()))
+                                );
+                                
+                                if (searchedInBlock.length >= 2) {
+                                    // User searched for 2+ drugs that are incompatible
+                                    incompatText = `🔴 ${searchedInBlock.join(' + ')} — ${msg}`;
+                                } else if (searchedInBlock.length === 1) {
+                                    // User searched for 1 drug - show the full incompatibility
+                                    const otherDrugs = allDrugs.filter(d => !searchedInBlock.some(s => d.toLowerCase().includes(s) || s.includes(d.toLowerCase())));
+                                    if (otherDrugs.length > 0) {
+                                        incompatText = `🔴 ${searchedInBlock[0]} + ${otherDrugs.join(' + ')} — ${msg}`;
+                                    } else {
+                                        incompatText = `🔴 ${allDrugs.join(' + ')} — ${msg}`;
+                                    }
+                                } else {
+                                    // Fallback
+                                    incompatText = `🔴 ${allDrugs.join(' + ')} — ${msg}`;
+                                }
+                            } else {
+                                // Single drug incompatibility
+                                incompatText = `🔴 ${blockMeds[0]}: ${msg}`;
+                            }
+                            
+                            safetyProfile.iv_incompatibility.push(incompatText);
                         }
                     }
                 });
             }
 
-            // Check for pregnancy
+            // Check for pregnancy (existing logic)
             if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
                 safetyProfile.categories.pregnancy = { status, details: detail };
             }
 
-            // Check for lactation
+            // Check for lactation (existing logic)
             if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
                 safetyProfile.categories.lactation = { status, details: detail };
             }
 
-            // Check for elderly
+            // Check for elderly (existing logic)
             if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
                 safetyProfile.categories.elderly = { status, details: detail };
             }
 
-            // Check for neonates/pediatrics
+            // Check for neonates/pediatrics (existing logic)
             if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
                 safetyProfile.categories.neonate = { status, details: detail };
             }
 
-            // Check for kidney failure
+            // Check for kidney failure (existing logic)
             if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f => 
                 f.fact === 'labs.creatinine_clearance' || f.fact === 'labs.egfr' || f.fact === 'labs.serum_creatinine' ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) || 
@@ -732,7 +827,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 safetyProfile.categories.kidney_failure = { status, details: detail };
             }
 
-            // Check for liver failure
+            // Check for liver failure (existing logic)
             if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f => 
                 f.fact === 'labs.total_bilirubin' || f.fact === 'labs.ast' || f.fact === 'labs.alt' || f.fact === 'labs.inr' ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) || 
@@ -760,6 +855,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to retrieve safety profile' });
     }
 });
+
 // Patient Medications for CDSS / History
 router.get('/medication-history/patient/:patientCode', authenticateToken, async (req, res) => {
     try {
