@@ -605,67 +605,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }));
         };
 
-        // Helper: Check if ALL medications in a condition block match the user's searched medications
-        // For multi-drug searches, we want to ensure the interaction is BETWEEN the searched drugs
-        const hasAllSearchedMedications = (condition) => {
-            const facts = collectFacts(condition);
-            const medFacts = facts.filter(f => f.fact === 'medications' && f.value);
-            
-            if (medFacts.length === 0) return false;
-            
-            // Get all unique medication names from the rule
-            const ruleMeds = [...new Set(medFacts.map(f => String(f.value).toLowerCase()))];
-            
-            // For multi-drug search (2+ drugs), check if the rule contains ALL searched medications
-            // OR if the interaction is specifically between the searched drugs
-            const searchedMeds = meds.map(m => m.toLowerCase());
-            
-            // Check if ALL searched medications are represented in the rule's medications
-            const allSearchedPresent = searchedMeds.every(searchMed => 
-                ruleMeds.some(ruleMed => 
-                    ruleMed.includes(searchMed) || searchMed.includes(ruleMed)
-                )
-            );
-            
-            // Also check if the rule's medications are ALL represented in the searched medications
-            // This ensures we don't show interactions involving drugs not searched
-            const allRuleMedsPresent = ruleMeds.every(ruleMed =>
-                searchedMeds.some(searchMed =>
-                    ruleMed.includes(searchMed) || searchMed.includes(ruleMed)
-                )
-            );
-            
-            // For 2+ drugs, require that the rule medications are a subset of the searched medications
-            // AND that the rule contains at least 2 distinct medications
-            // OR the rule medications are exactly the searched medications
-            if (searchedMeds.length >= 2) {
-                // Only show interactions where ALL rule medications are in the searched list
-                // AND the rule has at least 2 medications (unless the rule also has other conditions)
-                const hasMultipleMeds = ruleMeds.length >= 2;
-                
-                // If the rule has multiple meds, ensure all are in the searched list
-                if (hasMultipleMeds) {
-                    return ruleMeds.every(ruleMed =>
-                        searchedMeds.some(searchMed =>
-                            ruleMed.includes(searchMed) || searchMed.includes(ruleMed)
-                        )
-                    );
-                }
-                
-                // If the rule has a single medication but it's an interaction rule,
-                // it might be a general warning about that drug
-                // We'll handle this case separately
-                return allSearchedPresent && allRuleMedsPresent;
-            }
-            
-            // For single drug search, return true if the rule contains that drug
-            return ruleMeds.some(ruleMed =>
-                meds.some(searchMed =>
-                    ruleMed.includes(searchMed) || searchMed.includes(ruleMed)
-                )
-            );
-        };
-
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
         const isElderlyCheck = (f) => {
             if (f.fact !== 'age') return false;
@@ -685,30 +624,72 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    (op === 'lessThan' && val <= 18) || (op === 'lessThanOrEqual' && val <= 18);
         };
 
-        // Helper: Extract the specific medications from a condition block that match the user's search
-        const getMatchingMedications = (block) => {
-            const facts = collectFacts(block);
-            const medFacts = facts.filter(f => f.fact === 'medications' && f.value);
-            return medFacts.map(f => String(f.value).trim());
+        // Helper: Check if this rule is a drug interaction rule
+        const isInteractionRule = (rule) => {
+            const lowerName = String(rule.rule_name).toLowerCase();
+            const lowerType = String(rule.rule_type).toLowerCase();
+            return lowerType.includes('drug_interaction') || 
+                   lowerName.includes('interaction') ||
+                   lowerName.includes('drug interaction');
+        };
+
+        // Helper: Check if this rule is an IV incompatibility rule
+        const isIVIncompatibilityRule = (rule) => {
+            const lowerName = String(rule.rule_name).toLowerCase();
+            const lowerType = String(rule.rule_type).toLowerCase();
+            return lowerType === 'iv incompatibility' || 
+                   lowerName.includes('iv drug incompatibility') || 
+                   lowerName.includes('iv incompatibility') ||
+                   lowerName.includes('iv incompat');
+        };
+
+        // Helper: Get all medications from a rule
+        const getAllRuleMedications = (rule) => {
+            const cond = rule.rule_condition;
+            if (!cond) return [];
+            
+            const meds = [];
+            const facts = collectFacts(cond);
+            facts.forEach(f => {
+                if (f.fact === 'medications' && f.value) {
+                    meds.push(String(f.value).toLowerCase().trim());
+                }
+            });
+            return [...new Set(meds)];
+        };
+
+        // Helper: Check if two medications match (including partial matches)
+        const medsMatch = (med1, med2) => {
+            return med1.includes(med2) || med2.includes(med1);
+        };
+
+        // Helper: Check if a rule's medications match the searched medications
+        const getMatchingRuleMeds = (ruleMeds, searchedMeds) => {
+            const matched = [];
+            for (const ruleMed of ruleMeds) {
+                for (const searchMed of searchedMeds) {
+                    if (medsMatch(ruleMed, searchMed)) {
+                        matched.push({
+                            ruleMed: ruleMed,
+                            searchMed: searchMed
+                        });
+                        break;
+                    }
+                }
+            }
+            return matched;
         };
 
         // Parse each rule
         rules.forEach(rule => {
             const cond = rule.rule_condition;
             
-            // For multi-drug searches (2+ drugs), use the stricter hasAllSearchedMedications check
-            // For single drug search, use the regular hasMedication check
-            let shouldProcess = false;
-            if (meds.length >= 2) {
-                // For multi-drug, only process if the rule contains ALL searched medications
-                // OR if the rule medications are a subset of the searched medications
-                shouldProcess = hasAllSearchedMedications(cond);
-            } else {
-                // For single drug, process if the rule contains that drug
-                shouldProcess = hasMedication(cond);
-            }
+            // Skip rules that don't have a condition
+            if (!cond) return;
             
-            if (!shouldProcess) return;
+            // Check if the rule contains any of the searched medications
+            const hasAnyMed = hasMedication(cond);
+            if (!hasAnyMed) return;
 
             const allFacts = collectFacts(cond);
             const severity = rule.severity;
@@ -721,267 +702,109 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // ============================================
-            // ENHANCED: Drug Interactions
-            // For single drug: show all interactions involving that drug
-            // For multiple drugs: show ONLY interactions BETWEEN the searched drugs
+            // Handle Drug Interactions
             // ============================================
-            if (lowerRuleType.includes('drug_interaction') || lowerRuleName.includes('interaction')) {
-                // Get the interaction condition blocks
-                let interactionBlocks = [];
-                if (Array.isArray(rule.rule_condition?.any)) {
-                    interactionBlocks = rule.rule_condition.any;
-                } else if (rule.rule_condition) {
-                    interactionBlocks = [rule.rule_condition];
+            if (isInteractionRule(rule)) {
+                // Get all medications from the entire rule
+                const allRuleMeds = getAllRuleMedications(rule);
+                
+                if (allRuleMeds.length === 0) return;
+                
+                // Check how many searched medications are in this rule
+                const matchedMeds = [];
+                for (const searchMed of meds) {
+                    for (const ruleMed of allRuleMeds) {
+                        if (medsMatch(ruleMed, searchMed)) {
+                            matchedMeds.push(searchMed);
+                            break;
+                        }
+                    }
                 }
                 
-                interactionBlocks.forEach(block => {
-                    // Get ALL medications in this block
-                    const blockMeds = [...new Map(
-                        getAllMedicationsInBlock(block)
-                            .map(m => String(m).trim())
-                            .filter(Boolean)
-                            .map(m => [m.toLowerCase(), m])
-                    ).values()];
-                    
-                    // For multi-drug search, check if the interaction is specifically between the searched drugs
-                    if (meds.length >= 2) {
-                        // Check if ALL block medications are in the searched list
-                        const allBlockMedsInSearched = blockMeds.every(ruleMed => 
-                            meds.some(searchMed => 
-                                String(ruleMed).toLowerCase().includes(searchMed) || 
-                                searchMed.includes(String(ruleMed).toLowerCase())
-                            )
-                        );
-                        
-                        // Check if the block has at least 2 medications (a real interaction)
-                        // OR if the block has 1 medication but the rule has multiple blocks
-                        const blockHasMultipleMeds = blockMeds.length >= 2;
-                        
-                        // For multi-drug, only show if ALL block meds are in the searched list
-                        // AND the block has multiple meds (or the overall rule indicates an interaction)
-                        if (!allBlockMedsInSearched) return;
-                        
-                        // If block has only 1 medication, check if other blocks in the rule have the other drug
-                        if (!blockHasMultipleMeds) {
-                            // Check if there's another block in the rule that has a different searched drug
-                            let hasOtherDrug = false;
-                            if (Array.isArray(rule.rule_condition?.any)) {
-                                rule.rule_condition.any.forEach(otherBlock => {
-                                    if (otherBlock === block) return;
-                                    const otherBlockMeds = getAllMedicationsInBlock(otherBlock);
-                                    const otherBlockMedsLower = otherBlockMeds.map(m => m.toLowerCase());
-                                    hasOtherDrug = otherBlockMedsLower.some(med => 
-                                        meds.some(searchMed => 
-                                            med.includes(searchMed) || searchMed.includes(med)
-                                        ) && !blockMeds.some(blockMed => 
-                                            blockMed.toLowerCase().includes(med) || med.includes(blockMed.toLowerCase())
-                                        )
-                                    );
-                                });
-                            }
-                            if (!hasOtherDrug) return;
-                        }
-                    } else {
-                        // Single drug search: check if ANY block medication matches the searched drug
-                        const hasMatch = blockMeds.some(ruleMed => 
-                            meds.some(searchMed => 
-                                String(ruleMed).toLowerCase().includes(searchMed) || 
-                                searchMed.includes(String(ruleMed).toLowerCase())
-                            )
-                        );
-                        if (!hasMatch) return;
-                    }
-                    
-                    // Find which user medications matched
-                    const matchedUserMeds = meds.filter(searchMed =>
-                        blockMeds.some(ruleMed =>
-                            String(ruleMed).toLowerCase().includes(searchMed) ||
-                            searchMed.includes(String(ruleMed).toLowerCase())
-                        )
+                // For single drug search: show all interactions involving that drug
+                // For multiple drugs: only show interactions that involve at least 2 of the searched drugs
+                const uniqueMatchedMeds = [...new Set(matchedMeds)];
+                
+                let shouldShow = false;
+                let displayMeds = [];
+                
+                if (meds.length === 1) {
+                    // Single drug: show all interactions
+                    shouldShow = uniqueMatchedMeds.length >= 1;
+                    displayMeds = allRuleMeds;
+                } else {
+                    // Multiple drugs: only show if at least 2 searched drugs are involved
+                    shouldShow = uniqueMatchedMeds.length >= 2;
+                    // Only show the medications that were searched
+                    displayMeds = allRuleMeds.filter(ruleMed => 
+                        meds.some(searchMed => medsMatch(ruleMed, searchMed))
                     );
-                    
-                    // If we have at least one matched medication, show the interaction
-                    if (matchedUserMeds.length > 0) {
-                        let interactionText = '';
-                        
-                        // Format the interaction text
-                        if (blockMeds.length > 1) {
-                            const allDrugs = blockMeds.map(m => String(m).trim());
-                            
-                            // For multi-drug search, use the block medications directly
-                            if (meds.length >= 2) {
-                                // Only include medications that are in the searched list
-                                const filteredDrugs = allDrugs.filter(drug =>
-                                    meds.some(searchMed =>
-                                        drug.toLowerCase().includes(searchMed) ||
-                                        searchMed.includes(drug.toLowerCase())
-                                    )
-                                );
-                                
-                                if (filteredDrugs.length >= 2) {
-                                    interactionText = ` ${filteredDrugs.join(' + ')} — ${msg}`;
-                                } else {
-                                    // Fallback: use all drugs in the block
-                                    interactionText = ` ${allDrugs.join(' + ')} — ${msg}`;
-                                }
-                            } else {
-                                // Single drug search: show the interaction with all drugs involved
-                                const searchedDrug = matchedUserMeds[0];
-                                const otherDrugs = allDrugs.filter(ruleDrug => {
-                                    const ruleDrugLower = ruleDrug.toLowerCase();
-                                    const searchedDrugLower = searchedDrug.toLowerCase();
-                                    return !(ruleDrugLower.includes(searchedDrugLower) || 
-                                            searchedDrugLower.includes(ruleDrugLower));
-                                });
-                                
-                                const uniqueOtherDrugs = [
-                                    ...new Map(
-                                        otherDrugs.map(m => [m.toLowerCase().trim(), m.trim()])
-                                    ).values()
-                                ];
-                                
-                                if (uniqueOtherDrugs.length > 0) {
-                                    interactionText = ` ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
-                                } else {
-                                    interactionText = ` ${searchedDrug} — ${msg}`;
-                                }
-                            }
-                        }
-                        
-                        // Only add if not already present
-                        if (interactionText && !safetyProfile.major_interactions.includes(interactionText)) {
-                            safetyProfile.major_interactions.push(interactionText);
-                        }
+                }
+                
+                if (shouldShow && displayMeds.length >= 2) {
+                    // Format the interaction text
+                    let interactionText = displayMeds.map(m => m.trim()).join(' + ');
+                    if (msg) {
+                        interactionText += ` — ${msg}`;
                     }
-                });
+                    
+                    if (!safetyProfile.major_interactions.includes(interactionText)) {
+                        safetyProfile.major_interactions.push(interactionText);
+                    }
+                }
             }
 
             // ============================================
-            // ENHANCED: IV Incompatibility
-            // For single drug: show all incompatibilities involving that drug
-            // For multiple drugs: show ONLY incompatibilities BETWEEN the searched drugs
+            // Handle IV Incompatibility
             // ============================================
-            if (lowerRuleType === 'iv incompatibility' || 
-                lowerRuleName.includes('iv drug incompatibility') || 
-                lowerRuleName.includes('iv incompatibility')) {
+            if (isIVIncompatibilityRule(rule)) {
+                // Get all medications from the entire rule
+                const allRuleMeds = getAllRuleMedications(rule);
                 
-                let incompatBlocks = [];
-                if (Array.isArray(rule.rule_condition?.any)) {
-                    incompatBlocks = rule.rule_condition.any;
-                } else if (rule.rule_condition) {
-                    incompatBlocks = [rule.rule_condition];
+                if (allRuleMeds.length === 0) return;
+                
+                // Check how many searched medications are in this rule
+                const matchedMeds = [];
+                for (const searchMed of meds) {
+                    for (const ruleMed of allRuleMeds) {
+                        if (medsMatch(ruleMed, searchMed)) {
+                            matchedMeds.push(searchMed);
+                            break;
+                        }
+                    }
                 }
                 
-                incompatBlocks.forEach(block => {
-                    // Get ALL medications in this block
-                    const blockMeds = [...new Map(
-                        getAllMedicationsInBlock(block)
-                            .map(m => String(m).trim())
-                            .filter(Boolean)
-                            .map(m => [m.toLowerCase(), m])
-                    ).values()];
-                    
-                    // For multi-drug search, check if the incompatibility is specifically between the searched drugs
-                    if (meds.length >= 2) {
-                        // Check if ALL block medications are in the searched list
-                        const allBlockMedsInSearched = blockMeds.every(ruleMed => 
-                            meds.some(searchMed => 
-                                String(ruleMed).toLowerCase().includes(searchMed) || 
-                                searchMed.includes(String(ruleMed).toLowerCase())
-                            )
-                        );
-                        
-                        const blockHasMultipleMeds = blockMeds.length >= 2;
-                        
-                        if (!allBlockMedsInSearched) return;
-                        
-                        if (!blockHasMultipleMeds) {
-                            // Check if there's another block in the rule that has a different searched drug
-                            let hasOtherDrug = false;
-                            if (Array.isArray(rule.rule_condition?.any)) {
-                                rule.rule_condition.any.forEach(otherBlock => {
-                                    if (otherBlock === block) return;
-                                    const otherBlockMeds = getAllMedicationsInBlock(otherBlock);
-                                    const otherBlockMedsLower = otherBlockMeds.map(m => m.toLowerCase());
-                                    hasOtherDrug = otherBlockMedsLower.some(med => 
-                                        meds.some(searchMed => 
-                                            med.includes(searchMed) || searchMed.includes(med)
-                                        ) && !blockMeds.some(blockMed => 
-                                            blockMed.toLowerCase().includes(med) || med.includes(blockMed.toLowerCase())
-                                        )
-                                    );
-                                });
-                            }
-                            if (!hasOtherDrug) return;
-                        }
-                    } else {
-                        // Single drug search: check if ANY block medication matches
-                        const hasMatch = blockMeds.some(ruleMed => 
-                            meds.some(searchMed => 
-                                String(ruleMed).toLowerCase().includes(searchMed) || 
-                                searchMed.includes(String(ruleMed).toLowerCase())
-                            )
-                        );
-                        if (!hasMatch) return;
-                    }
-                    
-                    // Find which user medications matched
-                    const matchedUserMeds = meds.filter(searchMed =>
-                        blockMeds.some(ruleMed =>
-                            String(ruleMed).toLowerCase().includes(searchMed) ||
-                            searchMed.includes(String(ruleMed).toLowerCase())
-                        )
+                // For single drug search: show all incompatibilities involving that drug
+                // For multiple drugs: only show incompatibilities that involve at least 2 of the searched drugs
+                const uniqueMatchedMeds = [...new Set(matchedMeds)];
+                
+                let shouldShow = false;
+                let displayMeds = [];
+                
+                if (meds.length === 1) {
+                    // Single drug: show all incompatibilities
+                    shouldShow = uniqueMatchedMeds.length >= 1;
+                    displayMeds = allRuleMeds;
+                } else {
+                    // Multiple drugs: only show if at least 2 searched drugs are involved
+                    shouldShow = uniqueMatchedMeds.length >= 2;
+                    // Only show the medications that were searched
+                    displayMeds = allRuleMeds.filter(ruleMed => 
+                        meds.some(searchMed => medsMatch(ruleMed, searchMed))
                     );
-                    
-                    if (matchedUserMeds.length > 0) {
-                        let incompatText = '';
-                        
-                        if (blockMeds.length > 1) {
-                            const allDrugs = blockMeds.map(m => String(m).trim());
-                            
-                            if (meds.length >= 2) {
-                                // Multi-drug: only include drugs that are in the searched list
-                                const filteredDrugs = allDrugs.filter(drug =>
-                                    meds.some(searchMed =>
-                                        drug.toLowerCase().includes(searchMed) ||
-                                        searchMed.includes(drug.toLowerCase())
-                                    )
-                                );
-                                
-                                if (filteredDrugs.length >= 2) {
-                                    incompatText = ` ${filteredDrugs.join(' + ')} — ${msg}`;
-                                } else {
-                                    incompatText = ` ${allDrugs.join(' + ')} — ${msg}`;
-                                }
-                            } else {
-                                // Single drug: show the incompatibility with all drugs involved
-                                const searchedDrug = matchedUserMeds[0];
-                                const otherDrugs = allDrugs.filter(ruleDrug => {
-                                    const ruleDrugLower = ruleDrug.toLowerCase();
-                                    const searchedDrugLower = searchedDrug.toLowerCase();
-                                    return !(ruleDrugLower.includes(searchedDrugLower) || 
-                                            searchedDrugLower.includes(ruleDrugLower));
-                                });
-                                
-                                const uniqueOtherDrugs = [
-                                    ...new Map(
-                                        otherDrugs.map(m => [m.toLowerCase().trim(), m.trim()])
-                                    ).values()
-                                ];
-                                
-                                if (uniqueOtherDrugs.length > 0) {
-                                    incompatText = ` ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
-                                } else {
-                                    incompatText = ` ${searchedDrug} — ${msg}`;
-                                }
-                            }
-                        }
-                        
-                        if (incompatText && !safetyProfile.iv_incompatibility.includes(incompatText)) {
-                            safetyProfile.iv_incompatibility.push(incompatText);
-                        }
+                }
+                
+                if (shouldShow && displayMeds.length >= 2) {
+                    // Format the incompatibility text
+                    let incompatText = displayMeds.map(m => m.trim()).join(' + ');
+                    if (msg) {
+                        incompatText += ` — ${msg}`;
                     }
-                });
+                    
+                    if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
+                        safetyProfile.iv_incompatibility.push(incompatText);
+                    }
+                }
             }
 
             // Check for pregnancy (existing logic)
@@ -1035,6 +858,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // Log the results for debugging
         console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
         console.log(`✅ Major Interactions found: ${safetyProfile.major_interactions.length}`);
+        console.log('📊 Searched medications:', meds);
+        console.log('📊 Interactions:', safetyProfile.major_interactions);
+        console.log('📊 IV Incompatibilities:', safetyProfile.iv_incompatibility);
 
         res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
 
