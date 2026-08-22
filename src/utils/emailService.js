@@ -118,6 +118,10 @@ export const sendVerificationEmail = async (email, name, verificationToken) => {
             `
         };
 
+        console.log(`[DEBUG] Attempting to send verification email to: ${email}`);
+        console.log(`[DEBUG] SMTP Config - Host: ${config.emailHost}, Port: ${config.emailPort}`);
+        console.log(`[DEBUG] SMTP Sender: ${config.emailUser}`);
+        
         const info = await transporter.sendMail(mailOptions);
         console.log('✅ Verification email sent:', info.messageId);
         if (process.env.NODE_ENV !== 'production') {
@@ -126,6 +130,7 @@ export const sendVerificationEmail = async (email, name, verificationToken) => {
         return true;
     } catch (error) {
         console.error('❌ Error sending verification email:', error);
+        console.error('[DEBUG] Detailed Error Stack:', error.stack);
         return false;
     }
 };
