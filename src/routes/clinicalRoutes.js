@@ -714,13 +714,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                                 if (uniqueSearchedInBlock.length >= 2) {
                                     // User actually searched for 2+ different medications
                                     interactionText =
-                                        ` ${uniqueSearchedInBlock.map(capitalizeMedication).join(' + ')} — ${msg}`;
+                                        ` ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
                             
                                 } else if (uniqueSearchedInBlock.length === 1) {
                                     // User searched for ONE medication.
                                     // Show it once, then show the OTHER medications involved.
                             
-                                    const searchedDrug = capitalizeMedication(uniqueSearchedInBlock[0]);
+                                    const searchedDrug = uniqueSearchedInBlock[0];
                             
                                     const otherDrugs = allDrugs.filter(ruleDrug => {
                                         const ruleDrugLower = ruleDrug.toLowerCase();
@@ -842,11 +842,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                                 if (uniqueSearchedInBlock.length >= 2) {
                                     // User searched for 2+ different incompatible medications
                                     incompatText =
-                                        ` ${uniqueSearchedInBlock.map(capitalizeMedication).join(' + ')} — ${msg}`;
+                                        ` ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
                             
                                 } else if (uniqueSearchedInBlock.length === 1) {
                                     // User searched for ONE medication
-                                    const searchedDrug = capitalizeMedication(uniqueSearchedInBlock[0]);
+                                    const searchedDrug = uniqueSearchedInBlock[0];
                             
                                     // Remove all rule entries that represent the searched medication
                                     const otherDrugs = allDrugs.filter(ruleDrug => {
