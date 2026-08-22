@@ -522,7 +522,6 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * ENHANCED: Now properly captures interactions and IV incompatibilities for:
  * - Single drug searches (shows all interactions involving that drug)
  * - Multi-drug searches (shows interactions involving the searched drugs)
- * - Deduplicates medication names in interactions and incompatibilities
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -567,6 +566,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
          * Recursively collect ALL leaf facts from a nested condition tree.
          * Handles: { all: [...] }, { any: [...] }, and plain { fact, value, operator }
          */
+           
         const collectFacts = (node) => {
             if (!node) return [];
             const results = [];
