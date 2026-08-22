@@ -654,7 +654,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 
                 interactionBlocks.forEach(block => {
                     // Get ALL medications in this block
-                    const blockMeds = getAllMedicationsInBlock(block);
+                    const blockMeds = [...new Map(
+                        getAllMedicationsInBlock(block)
+                            .map(m => String(m).trim())
+                            .filter(Boolean)
+                            .map(m => [m.toLowerCase(), m])
+                    ).values()];
                     
                     // Check if ANY of the user's medications match this block
                     const hasMatch = blockMeds.some(ruleMed => 
@@ -741,7 +746,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 
                 incompatBlocks.forEach(block => {
                     // Get ALL medications in this block
-                    const blockMeds = getAllMedicationsInBlock(block);
+                    const blockMeds = [...new Map(
+                        getAllMedicationsInBlock(block)
+                            .map(m => String(m).trim())
+                            .filter(Boolean)
+                            .map(m => [m.toLowerCase(), m])
+                    ).values()];
                     
                     // Check if ANY of the user's medications match this block
                     const hasMatch = blockMeds.some(ruleMed => 
