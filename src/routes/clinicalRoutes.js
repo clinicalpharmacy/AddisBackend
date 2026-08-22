@@ -664,10 +664,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     if (matchedEnteredMeds.length > 0) {
                         if (matchedEnteredMeds.length > 1) {
                             // Multi-drug combination interaction
-                            safetyProfile.major_interactions.push(`⚠️ INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
+                            safetyProfile.major_interactions.push(`INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
                         } else {
                             // Single medication interaction (now properly captured)
-                            safetyProfile.major_interactions.push(`⚠️ ${matchedEnteredMeds[0]}: ${msg}`);
+                            safetyProfile.major_interactions.push(`${matchedEnteredMeds[0]}: ${msg}`);
                         }
                     }
                 });
@@ -692,10 +692,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     if (matchedEnteredMeds.length > 0) {
                         if (matchedEnteredMeds.length > 1) {
                             // Multi-drug incompatibility
-                            safetyProfile.iv_incompatibility.push(`⚠️ INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
+                            safetyProfile.iv_incompatibility.push(`INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
                         } else {
                             // Single medication IV incompatibility (now properly captured)
-                            safetyProfile.iv_incompatibility.push(`⚠️ ${matchedEnteredMeds[0]} IV incompatibility — ${msg}`);
+                            safetyProfile.iv_incompatibility.push(`${matchedEnteredMeds[0]} IV incompatibility — ${msg}`);
                         }
                     }
                 });
