@@ -1,9 +1,10 @@
 import { debug } from './logger.js';
 
-// Validate email format
+// Validate email format (strict)
 export function isValidEmail(email) {
     if (!email) return false;
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    // Requires: at least 2 chars before @, proper domain structure, 2-6 char TLD
+    const emailRegex = /^[a-zA-Z0-9._%+-]{2,}@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}$/;
     return emailRegex.test(email.trim());
 }
 

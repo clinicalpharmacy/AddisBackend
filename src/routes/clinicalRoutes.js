@@ -588,7 +588,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // Helper to check if a condition targets ANY of the provided medications
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
-            return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
+            return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                const ruleVal = String(f.value).toLowerCase();
+                return ruleVal.includes(m) || m.includes(ruleVal);
+            }));
         };
 
         // Helper to get matching medications from the user input
@@ -599,7 +602,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 if (f.fact === 'medications' && f.value) {
                     const ruleVal = String(f.value).toLowerCase();
                     meds.forEach(m => {
-                        if (ruleVal.includes(m) && !matched.includes(m)) {
+                        if ((ruleVal.includes(m) || m.includes(ruleVal)) && !matched.includes(m)) {
                             matched.push(m);
                         }
                     });
@@ -652,9 +655,15 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 let interactionBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 interactionBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
-                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
+                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                        const ruleVal = String(f.value).toLowerCase();
+                        return ruleVal.includes(m) || m.includes(ruleVal);
+                    }));
                     if (involvesTargetMed) {
-                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m))).map(f => f.value);
+                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
+                            const ruleVal = String(f.value).toLowerCase();
+                            return ruleVal.includes(m) || m.includes(ruleVal);
+                        })).map(f => f.value);
                         if (matchedEnteredMeds.length > 1) {
                             safetyProfile.major_interactions.push(`⚠️ INTERACTION: ${matchedEnteredMeds.join(' + ')} — ${msg}`);
                         } else if (matchedEnteredMeds.length === 1) {
@@ -674,9 +683,15 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 let incompatBlocks = Array.isArray(rule.rule_condition?.any) ? rule.rule_condition.any : [rule.rule_condition];
                 incompatBlocks.forEach(block => {
                     const blockFacts = collectFacts(block);
-                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m)));
+                    const involvesTargetMed = blockFacts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                        const ruleVal = String(f.value).toLowerCase();
+                        return ruleVal.includes(m) || m.includes(ruleVal);
+                    }));
                     if (involvesTargetMed) {
-                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => String(f.value).toLowerCase().includes(m))).map(f => f.value);
+                        const matchedEnteredMeds = blockFacts.filter(f => f.fact === 'medications' && f.value && meds.some(m => {
+                            const ruleVal = String(f.value).toLowerCase();
+                            return ruleVal.includes(m) || m.includes(ruleVal);
+                        })).map(f => f.value);
                         if (matchedEnteredMeds.length > 1) {
                             safetyProfile.iv_incompatibility.push(`⚠️ INCOMPATIBLE: ${matchedEnteredMeds.join(' + ')}`);
                         } else if (matchedEnteredMeds.length === 1) {
