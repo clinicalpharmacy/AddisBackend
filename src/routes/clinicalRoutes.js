@@ -684,39 +684,78 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             
                             // Format the interaction text without duplicating the medication name
                             if (blockMeds.length > 1) {
-                                // Multi-drug interaction - show all drugs in the rule
-                                const allDrugs = blockMeds.map(m => String(m));
-                                
-                                // Check if the user searched for multiple drugs that match this interaction
-                                const searchedInBlock = allDrugs.filter(d => 
-                                    meds.some(m => d.toLowerCase().includes(m) || m.includes(d.toLowerCase()))
+                                // All medications in this interaction rule
+                                const allDrugs = blockMeds.map(m => String(m).trim());
+                            
+                                // Find the user's medications that match this interaction rule.
+                                // IMPORTANT: use the USER'S medication list, not every matching
+                                // representation in the rule. This prevents:
+                                // Phenytoin + Phenytoin + Paclitaxel
+                                const searchedInBlock = meds.filter(userMed =>
+                                    allDrugs.some(ruleMed => {
+                                        const ruleMedLower = ruleMed.toLowerCase();
+                                        const userMedLower = userMed.toLowerCase();
+                            
+                                        return ruleMedLower.includes(userMedLower) ||
+                                               userMedLower.includes(ruleMedLower);
+                                    })
                                 );
-                                
-                                if (searchedInBlock.length >= 2) {
-                                    // User searched for 2+ drugs that interact - highlight them
-                                    interactionText = `⚠️ ${searchedInBlock.join(' + ')} — ${msg}`;
-                                } else if (searchedInBlock.length === 1) {
-                                    // User searched for 1 drug - show the full interaction without duplicating
-                                    const otherDrugs = allDrugs.filter(d => !searchedInBlock.some(s => d.toLowerCase().includes(s) || s.includes(d.toLowerCase())));
-                                    if (otherDrugs.length > 0) {
-                                        // Only show the searched drug once with other drugs
-                                        interactionText = `⚠️ ${searchedInBlock[0]} + ${otherDrugs.join(' + ')} — ${msg}`;
+                            
+                                // Remove duplicate user medications
+                                const uniqueSearchedInBlock = [
+                                    ...new Map(
+                                        searchedInBlock.map(m => [
+                                            m.toLowerCase().trim(),
+                                            m.trim()
+                                        ])
+                                    ).values()
+                                ];
+                            
+                                if (uniqueSearchedInBlock.length >= 2) {
+                                    // User actually searched for 2+ different medications
+                                    interactionText =
+                                        `⚠️ ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
+                            
+                                } else if (uniqueSearchedInBlock.length === 1) {
+                                    // User searched for ONE medication.
+                                    // Show it once, then show the OTHER medications involved.
+                            
+                                    const searchedDrug = uniqueSearchedInBlock[0];
+                            
+                                    const otherDrugs = allDrugs.filter(ruleDrug => {
+                                        const ruleDrugLower = ruleDrug.toLowerCase();
+                                        const searchedDrugLower = searchedDrug.toLowerCase();
+                            
+                                        // Exclude the rule medication if it represents
+                                        // the same medication as the user's searched drug.
+                                        return !(
+                                            ruleDrugLower.includes(searchedDrugLower) ||
+                                            searchedDrugLower.includes(ruleDrugLower)
+                                        );
+                                    });
+                            
+                                    // Also remove duplicate other drugs
+                                    const uniqueOtherDrugs = [
+                                        ...new Map(
+                                            otherDrugs.map(m => [
+                                                m.toLowerCase().trim(),
+                                                m.trim()
+                                            ])
+                                        ).values()
+                                    ];
+                            
+                                    if (uniqueOtherDrugs.length > 0) {
+                                        interactionText =
+                                            `⚠️ ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
                                     } else {
-                                        // If no other drugs, show all drugs
-                                        interactionText = `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
+                                        interactionText =
+                                            `⚠️ ${searchedDrug} — ${msg}`;
                                     }
+                            
                                 } else {
-                                    // Fallback - show all drugs
-                                    interactionText = `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
-                                }
-                            } else {
-                                // Single drug interaction - just show the message without repeating the drug name
-                                const drugName = String(blockMeds[0]);
-                                // Check if the message already contains the drug name
-                                if (msg.toLowerCase().includes(drugName.toLowerCase())) {
-                                    interactionText = `⚠️ ${msg}`;
-                                } else {
-                                    interactionText = `⚠️ ${drugName}: ${msg}`;
+                                    // Fallback
+                                    interactionText =
+                                        `⚠️ ${allDrugs.join(' + ')} — ${msg}`;
                                 }
                             }
                             
@@ -776,39 +815,72 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             
                             // Format the incompatibility text without duplicating the medication name
                             if (blockMeds.length > 1) {
-                                // Multi-drug incompatibility - show all drugs in the rule
-                                const allDrugs = blockMeds.map(m => String(m));
-                                
-                                // Check if the user searched for multiple drugs that are incompatible
-                                const searchedInBlock = allDrugs.filter(d => 
-                                    meds.some(m => d.toLowerCase().includes(m) || m.includes(d.toLowerCase()))
+                                // All medications in this incompatibility rule
+                                const allDrugs = blockMeds.map(m => String(m).trim());
+                            
+                                // Find medications actually searched by the user
+                                const searchedInBlock = meds.filter(userMed =>
+                                    allDrugs.some(ruleMed => {
+                                        const ruleMedLower = ruleMed.toLowerCase();
+                                        const userMedLower = userMed.toLowerCase();
+                            
+                                        return ruleMedLower.includes(userMedLower) ||
+                                               userMedLower.includes(ruleMedLower);
+                                    })
                                 );
-                                
-                                if (searchedInBlock.length >= 2) {
-                                    // User searched for 2+ drugs that are incompatible
-                                    incompatText = `🔴 ${searchedInBlock.join(' + ')} — ${msg}`;
-                                } else if (searchedInBlock.length === 1) {
-                                    // User searched for 1 drug - show the full incompatibility without duplicating
-                                    const otherDrugs = allDrugs.filter(d => !searchedInBlock.some(s => d.toLowerCase().includes(s) || s.includes(d.toLowerCase())));
-                                    if (otherDrugs.length > 0) {
-                                        // Only show the searched drug once with other drugs
-                                        incompatText = `🔴 ${searchedInBlock[0]} + ${otherDrugs.join(' + ')} — ${msg}`;
+                            
+                                // Remove duplicate user medications
+                                const uniqueSearchedInBlock = [
+                                    ...new Map(
+                                        searchedInBlock.map(m => [
+                                            m.toLowerCase().trim(),
+                                            m.trim()
+                                        ])
+                                    ).values()
+                                ];
+                            
+                                if (uniqueSearchedInBlock.length >= 2) {
+                                    // User searched for 2+ different incompatible medications
+                                    incompatText =
+                                        `🔴 ${uniqueSearchedInBlock.join(' + ')} — ${msg}`;
+                            
+                                } else if (uniqueSearchedInBlock.length === 1) {
+                                    // User searched for ONE medication
+                                    const searchedDrug = uniqueSearchedInBlock[0];
+                            
+                                    // Remove all rule entries that represent the searched medication
+                                    const otherDrugs = allDrugs.filter(ruleDrug => {
+                                        const ruleDrugLower = ruleDrug.toLowerCase();
+                                        const searchedDrugLower = searchedDrug.toLowerCase();
+                            
+                                        return !(
+                                            ruleDrugLower.includes(searchedDrugLower) ||
+                                            searchedDrugLower.includes(ruleDrugLower)
+                                        );
+                                    });
+                            
+                                    // Remove duplicate other medications
+                                    const uniqueOtherDrugs = [
+                                        ...new Map(
+                                            otherDrugs.map(m => [
+                                                m.toLowerCase().trim(),
+                                                m.trim()
+                                            ])
+                                        ).values()
+                                    ];
+                            
+                                    if (uniqueOtherDrugs.length > 0) {
+                                        incompatText =
+                                            `🔴 ${searchedDrug} + ${uniqueOtherDrugs.join(' + ')} — ${msg}`;
                                     } else {
-                                        // If no other drugs, show all drugs
-                                        incompatText = `🔴 ${allDrugs.join(' + ')} — ${msg}`;
+                                        incompatText =
+                                            `🔴 ${searchedDrug} — ${msg}`;
                                     }
+                            
                                 } else {
-                                    // Fallback - show all drugs
-                                    incompatText = `🔴 ${allDrugs.join(' + ')} — ${msg}`;
-                                }
-                            } else {
-                                // Single drug incompatibility - just show the message without repeating the drug name
-                                const drugName = String(blockMeds[0]);
-                                // Check if the message already contains the drug name
-                                if (msg.toLowerCase().includes(drugName.toLowerCase())) {
-                                    incompatText = `🔴 ${msg}`;
-                                } else {
-                                    incompatText = `🔴 ${drugName}: ${msg}`;
+                                    // Fallback
+                                    incompatText =
+                                        `🔴 ${allDrugs.join(' + ')} — ${msg}`;
                                 }
                             }
                             
