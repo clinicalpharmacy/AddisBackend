@@ -14,7 +14,7 @@ const CHAPA_SECRET_KEY = config.chapa.secretKey;
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {
     try {
-        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code } = req.body;
+        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount, country } = req.body;
         if (!planId || !userEmail) return res.status(400).json({ error: 'Missing planId or email' });
 
         userEmail = userEmail.trim().toLowerCase();
@@ -31,8 +31,10 @@ router.post('/chapa/create-payment', async (req, res) => {
         const tx_ref = `pharma_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const nameParts = (userName || 'User').split(' ');
 
+        const finalAmount = amount ? amount.toString() : planDetails.price.toString();
+
         const paymentData = {
-            amount: planDetails.price.toString(),
+            amount: finalAmount,
             currency: 'ETB',
             email: userEmail,
             first_name: nameParts[0] || 'User',
@@ -69,7 +71,7 @@ router.post('/chapa/create-payment', async (req, res) => {
             tx_ref,
             plan_id: planId,
             plan_name: planDetails.name,
-            amount: planDetails.price,
+            amount: Number(finalAmount),
             currency: 'ETB',
             status: 'pending',
             payment_method: 'chapa',
@@ -92,7 +94,7 @@ router.post('/chapa/create-payment', async (req, res) => {
         }
 
         console.log('✅ Payment initialization successful, returning checkout URL');
-        res.json({ success: true, payment_url: response.data.data.checkout_url, tx_ref, amount: planDetails.price, user_phone: userPhone });
+        res.json({ success: true, payment_url: response.data.data.checkout_url, tx_ref, amount: Number(finalAmount), user_phone: userPhone });
     } catch (e) {
         // Log EVERYTHING for debugging the 500 error
         const rawError = e.response?.data;
