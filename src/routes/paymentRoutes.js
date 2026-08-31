@@ -14,7 +14,11 @@ const CHAPA_SECRET_KEY = config.chapa.secretKey;
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {
     try {
+<<<<<<< HEAD
         let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount, country } = req.body;
+=======
+        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount: frontendAmount, country } = req.body;
+>>>>>>> fe6593a282e6705a7ae8b9d38ff0b9f03860f1c8
         if (!planId || !userEmail) return res.status(400).json({ error: 'Missing planId or email' });
 
         userEmail = userEmail.trim().toLowerCase();
@@ -28,13 +32,26 @@ router.post('/chapa/create-payment', async (req, res) => {
             return res.status(400).json({ error: 'Invalid plan' });
         }
 
+        // Use frontend amount if provided (for international pricing), otherwise fallback to base price
+        let finalAmount = planDetails.price;
+        if (frontendAmount && !isNaN(frontendAmount)) {
+            finalAmount = parseFloat(frontendAmount);
+            console.log(`ℹ️ Using custom amount from frontend: ${finalAmount} ETB (Country: ${country || 'unknown'})`);
+        } else {
+            console.log(`ℹ️ Using base plan price: ${finalAmount} ETB`);
+        }
+
         const tx_ref = `pharma_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const nameParts = (userName || 'User').split(' ');
 
         const finalAmount = amount ? amount.toString() : planDetails.price.toString();
 
         const paymentData = {
+<<<<<<< HEAD
             amount: finalAmount,
+=======
+            amount: finalAmount.toString(),
+>>>>>>> fe6593a282e6705a7ae8b9d38ff0b9f03860f1c8
             currency: 'ETB',
             email: userEmail,
             first_name: nameParts[0] || 'User',
@@ -45,7 +62,7 @@ router.post('/chapa/create-payment', async (req, res) => {
             customization: { title: 'PharmaCare', description: planDetails.name.substring(0, 100) }
         };
 
-        console.log(`ℹ️ Initializing Chapa payment for ${userEmail} (Plan: ${planId}, Ref: ${tx_ref})`);
+        console.log(`ℹ️ Initializing Chapa payment for ${userEmail} (Plan: ${planId}, Amount: ${finalAmount} ETB, Ref: ${tx_ref})`);
 
         const response = await axios.post(`${CHAPA_BASE_URL}/transaction/initialize`, paymentData, {
             headers: { 'Authorization': `Bearer ${CHAPA_SECRET_KEY}`, 'Content-Type': 'application/json' },
@@ -60,7 +77,7 @@ router.post('/chapa/create-payment', async (req, res) => {
         const isHealthcareClient = userEmail.includes('@hcc.addis-med.com');
         const dbUserId = isHealthcareClient ? null : userId;
 
-        console.log(`ℹ️ Recording pending payment in DB (HC Client: ${isHealthcareClient})`);
+        console.log(`ℹ️ Recording pending payment in DB (HC Client: ${isHealthcareClient}, Amount: ${finalAmount} ETB)`);
 
         const db = supabaseAdmin || supabase;
         const { error: insertError } = await db.from('payments').insert([{
@@ -71,7 +88,11 @@ router.post('/chapa/create-payment', async (req, res) => {
             tx_ref,
             plan_id: planId,
             plan_name: planDetails.name,
+<<<<<<< HEAD
             amount: Number(finalAmount),
+=======
+            amount: finalAmount, // Store the actual amount paid (could be 300, 900, 3000, or 9000)
+>>>>>>> fe6593a282e6705a7ae8b9d38ff0b9f03860f1c8
             currency: 'ETB',
             status: 'pending',
             payment_method: 'chapa',
@@ -82,7 +103,9 @@ router.post('/chapa/create-payment', async (req, res) => {
                 is_healthcare_client: isHealthcareClient,
                 healthcare_client_id: isHealthcareClient ? userEmail.split('@')[0] : null,
                 client_password: client_password || null,
-                referral_code: referral_code || null
+                referral_code: referral_code || null,
+                country: country || 'Unknown',
+                is_international: country && !country.toLowerCase().includes('ethiopia')
             },
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -94,7 +117,11 @@ router.post('/chapa/create-payment', async (req, res) => {
         }
 
         console.log('✅ Payment initialization successful, returning checkout URL');
+<<<<<<< HEAD
         res.json({ success: true, payment_url: response.data.data.checkout_url, tx_ref, amount: Number(finalAmount), user_phone: userPhone });
+=======
+        res.json({ success: true, payment_url: response.data.data.checkout_url, tx_ref, amount: finalAmount, user_phone: userPhone });
+>>>>>>> fe6593a282e6705a7ae8b9d38ff0b9f03860f1c8
     } catch (e) {
         // Log EVERYTHING for debugging the 500 error
         const rawError = e.response?.data;
@@ -161,6 +188,9 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                 const hashedPassword = await bcrypt.hash(rawPassword, 10);
                 const endDate = calculateEndDate(payment.plan_id);
 
+                // Determine country from gateway_response
+                const userCountry = payment.gateway_response?.country || 'Ethiopia';
+
                 const { error: createError } = await db.from('users').upsert([{
                     email: cleanEmail,
                     password_hash: hashedPassword,
@@ -168,7 +198,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     phone: payment.user_phone || '0000000000',
                     role: 'healthcare_client',
                     account_type: 'individual',
-                    country: 'Ethiopia',
+                    country: userCountry,
                     region: 'N/A',
                     woreda: 'N/A',
                     tin_number: 'N/A',
@@ -274,7 +304,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     company_id: user.company_id || null,
                     plan_id: payment.plan_id,
                     plan_name: payment.plan_name,
-                    amount: payment.amount,
+                    amount: payment.amount, // Store the actual amount paid
                     currency: payment.currency,
                     status: 'active',
                     payment_method: 'chapa',
@@ -363,6 +393,9 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                             // Generate promotion code
                             const genPromo = `HC${Math.random().toString().substring(2, 6)}`;
 
+                            // Get country from gateway_response
+                            const userCountry = payment.gateway_response?.country || 'Ethiopia';
+
                             const { data: upsertData, error: upsertError } = await db.from('users').upsert([{
                                 email: cleanEmail,
                                 password_hash: hashedPassword,
@@ -370,7 +403,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 phone: payment.user_phone || '0000000000',
                                 role: 'healthcare_client',
                                 account_type: 'individual',
-                                country: 'Ethiopia',
+                                country: userCountry,
                                 region: 'N/A',
                                 woreda: 'N/A',
                                 tin_number: 'N/A',
