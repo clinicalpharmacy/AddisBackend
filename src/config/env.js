@@ -12,8 +12,8 @@ export const config = {
         serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY
     },
     chapa: {
-        secretKey: process.env.CHAPA_SECRET_KEY || 'CHASECK_TEST-BUUCXuWZFwKutOudWFIBaFbwIEb51ti3',
-        publicKey: process.env.CHAPA_PUBLIC_KEY || 'CHAPUBK_TEST-U7e8egufPIViBiDwS5DQJm3Fr7NBlG75',
+        secretKey: process.env.CHAPA_SECRET_KEY || 'CHASECK-A0g5zIc1rOzNMwjLWvP7zmOOQZJ5vaMT',
+        publicKey: process.env.CHAPA_PUBLIC_KEY || 'CHAPUBK-dQ9pLbc7gpgRpm5elwp2i7wdymd4KcKa',
         baseUrl: 'https://api.chapa.co/v1'
     },
     email: {

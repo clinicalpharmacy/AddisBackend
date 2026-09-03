@@ -36,6 +36,10 @@ router.post('/chapa/create-payment', async (req, res) => {
         } else {
             console.log(`ℹ️ Using base plan price: ${finalAmount} ETB`);
         }
+        
+        // TEMPORARY OVERRIDE FOR CHAPA LIVE TESTING
+        finalAmount = 1;
+        console.log(`⚠️ OVERRIDING AMOUNT TO 1 ETB FOR TESTING`);
 
         const tx_ref = `pharma_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const nameParts = (userName || 'User').split(' ');
