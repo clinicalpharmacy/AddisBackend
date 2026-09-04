@@ -27,13 +27,13 @@ const ADMINS = [
         email: 'eskinder.cpat@gmail.com',
         password: 'Addismed@2025',
         full_name: 'Eskinder (Admin)',
-        role: 'superadmin'
+        role: 'admin'
     },
     {
         email: 'wendebiruk02@gmail.com',
         password: 'wende3428',
         full_name: 'Wendebiruk (Admin)',
-        role: 'superadmin'
+        role: 'admin'
     }
 ];
 
