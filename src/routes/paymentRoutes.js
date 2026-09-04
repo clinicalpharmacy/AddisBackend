@@ -7,14 +7,127 @@ import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js
 import { getPlanDetails, calculateEndDate } from '../utils/helpers.js';
 import { sendVerificationEmail } from '../utils/emailService.js';
 
+import { EncryptionService } from '../utils/encryptionService.js';
+
 const router = express.Router();
 const CHAPA_BASE_URL = config.chapa.baseUrl || 'https://api.chapa.co/v1';
 const CHAPA_SECRET_KEY = config.chapa.secretKey;
 
+const generateToken = () => {
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
+
+const processRegistration = async (payload, db) => {
+    if (!payload) return null;
+    
+    // Check if user already exists
+    const emailToCheck = payload.account_type === 'individual' ? payload.email : payload.admin_email;
+    if (!emailToCheck) return null;
+
+    const { data: existingUser } = await db.from('users').select('*').ilike('email', emailToCheck.trim()).maybeSingle();
+    if (existingUser) return existingUser;
+
+    const encryptionSalt = EncryptionService.generateSalt();
+    const verificationToken = generateToken();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    if (payload.account_type === 'individual') {
+        const hashedPassword = await bcrypt.hash(payload.password.trim(), 10);
+        let referredById = null;
+        if (payload.referral_code) {
+            const { data: referrer } = await db.from('users').select('id').eq('promotion_code', payload.referral_code.trim().toUpperCase()).maybeSingle();
+            if (referrer) referredById = referrer.id;
+        }
+
+        const nameBase = payload.full_name ? payload.full_name.replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase() : 'USR';
+        const promotionCode = (nameBase.length > 0 ? nameBase : 'USR') + Math.floor(Math.random() * 9000 + 1000) + Math.random().toString(36).substring(2, 5).toUpperCase();
+
+        const userData = {
+            email: payload.email.trim().toLowerCase(),
+            password_hash: hashedPassword,
+            full_name: payload.full_name.trim(),
+            phone: payload.phone.trim(),
+            country: payload.country?.trim() || 'Ethiopia',
+            region: payload.region?.trim() || '',
+            woreda: payload.woreda?.trim() || '',
+            tin_number: payload.tin_number?.trim() || '',
+            license_number: payload.license_number?.trim() || '',
+            approved: true,
+            role: payload.role || 'pharmacist',
+            account_type: 'individual',
+            subscription_status: 'inactive',
+            email_verified: false,
+            email_verification_token: verificationToken,
+            email_verification_expires: verificationExpires,
+            encryption_salt: encryptionSalt,
+            promotion_code: promotionCode,
+            referred_by_id: referredById,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+        const { data: user, error } = await db.from('users').insert([userData]).select().single();
+        if (error) console.error("Error creating individual user:", error);
+        return user;
+    } else {
+        const hashedPassword = await bcrypt.hash(payload.admin_password.trim(), 10);
+        const companyData = {
+            company_name: payload.company_name.trim(),
+            email: payload.company_email.trim().toLowerCase(),
+            admin_email: payload.admin_email.trim().toLowerCase(),
+            company_address: payload.company_address?.trim() || '',
+            company_size: payload.company_size || '1-10',
+            company_type: payload.company_type || 'pharmacy',
+            tin_number: payload.tin_number?.trim() || '',
+            country: payload.country?.trim() || 'Ethiopia',
+            region: payload.region?.trim() || '',
+            user_capacity: parseInt(payload.user_capacity) || 5,
+            subscription_status: 'inactive',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+        const { data: companies, error: companyError } = await db.from('companies').insert([companyData]).select();
+        const company = companies?.[0];
+        if (companyError || !company) {
+            console.error("Error creating company:", companyError);
+            return null;
+        }
+
+        const nameBase = payload.admin_full_name ? payload.admin_full_name.replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase() : 'ADM';
+        const promotionCode = (nameBase.length > 0 ? nameBase : 'ADM') + Math.floor(Math.random() * 9000 + 1000) + Math.random().toString(36).substring(2, 5).toUpperCase();
+
+        const adminData = {
+            email: payload.admin_email.trim().toLowerCase(),
+            password_hash: hashedPassword,
+            full_name: payload.admin_full_name.trim(),
+            phone: payload.admin_phone.trim(),
+            company_id: company.id,
+            role: 'company_admin',
+            account_type: 'company',
+            approved: true,
+            email_verified: false,
+            email_verification_token: verificationToken,
+            email_verification_expires: verificationExpires,
+            encryption_salt: encryptionSalt,
+            promotion_code: promotionCode,
+            country: payload.country?.trim() || 'Ethiopia',
+            region: payload.region?.trim() || '',
+            woreda: payload.woreda?.trim() || '',
+            tin_number: payload.tin_number?.trim() || '',
+            license_number: payload.admin_license_number?.trim() || '',
+            subscription_status: 'inactive',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+        const { data: user, error: userError } = await db.from('users').insert([adminData]).select().single();
+        if (userError) console.error("Error creating company admin:", userError);
+        return user;
+    }
+};
+
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {
     try {
-        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount: frontendAmount, country } = req.body;
+        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount: frontendAmount, country, registration_payload } = req.body;
         if (!planId || !userEmail) return res.status(400).json({ error: 'Missing planId or email' });
 
         userEmail = userEmail.trim().toLowerCase();
@@ -95,7 +208,8 @@ router.post('/chapa/create-payment', async (req, res) => {
                 client_password: client_password || null,
                 referral_code: referral_code || null,
                 country: country || 'Unknown',
-                is_international: country && !country.toLowerCase().includes('ethiopia')
+                is_international: country && !country.toLowerCase().includes('ethiopia'),
+                registration_payload: registration_payload || null
             },
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -222,6 +336,12 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     console.log(`ℹ️ Webhook: Found user in company_users table: ${cleanEmail}`);
                     user = cUser;
                 }
+            }
+
+            // Delayed Registration logic
+            if (!user && payment.gateway_response?.registration_payload) {
+                console.log(`ℹ️ Webhook: Processing delayed registration for ${cleanEmail}`);
+                user = await processRegistration(payment.gateway_response.registration_payload, db);
             }
 
             if (user) {
@@ -471,6 +591,12 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 console.log(`ℹ️ Verify: Found user in company_users table: ${cleanEmail}`);
                                 user = cUser;
                             }
+                        }
+
+                        // Delayed Registration logic
+                        if (!user && payment.gateway_response?.registration_payload) {
+                            console.log(`ℹ️ Verify: Processing delayed registration for ${cleanEmail}`);
+                            user = await processRegistration(payment.gateway_response.registration_payload, db);
                         }
 
                         if (user) {

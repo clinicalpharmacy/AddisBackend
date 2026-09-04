@@ -381,6 +381,64 @@ router.post('/verify-token', async (req, res) => {
         res.status(500).json({ success: false, error: 'Verification failed' });
     }
 });
+// Validate Individual Registration (before payment)
+router.post('/validate-registration', async (req, res) => {
+    try {
+        const { email, password, full_name, phone } = req.body;
+        if (!email || !password || !full_name || !phone) return res.status(400).json({ success: false, error: 'Required fields missing' });
+        
+        const trimmedEmail = email.trim().toLowerCase();
+        if (!isValidEmail(trimmedEmail)) return res.status(400).json({ success: false, error: 'Invalid email' });
+        if (!supabase) return res.status(503).json({ success: false, error: 'Database not configured' });
+
+        const { data: existingUser } = await supabase.from('users').select('id').eq('email', trimmedEmail).maybeSingle();
+        if (existingUser) return res.status(400).json({ success: false, error: 'Email already registered' });
+
+        res.status(200).json({ success: true, message: 'Validation successful' });
+    } catch (error) {
+        console.error('Validation error:', error);
+        res.status(500).json({ success: false, error: 'Validation failed', details: error.message });
+    }
+});
+
+// Validate Company Registration (before payment)
+router.post('/validate-company-registration', async (req, res) => {
+    try {
+        const { company_name, company_email, admin_email, admin_password, admin_full_name, admin_phone } = req.body;
+
+        if (!company_name || !company_email || !admin_email || !admin_password || !admin_full_name || !admin_phone) {
+            return res.status(400).json({ success: false, error: 'Required fields missing' });
+        }
+        
+        const trimmedAdminEmail = admin_email.trim().toLowerCase();
+        if (!isValidEmail(trimmedAdminEmail)) return res.status(400).json({ error: 'Invalid admin email' });
+        if (!supabase) return res.status(503).json({ error: 'Database not configured' });
+
+        const searchFilter = `company_name.ilike.%${company_name.trim()}%`;
+        const { data: existingCompanies, error: searchError } = await supabase
+            .from('companies')
+            .select('id')
+            .or(searchFilter)
+            .limit(1);
+
+        if (searchError) return res.status(500).json({ success: false, error: 'Error checking existing companies: ' + searchError.message });
+        if (existingCompanies && existingCompanies.length > 0) return res.status(400).json({ error: 'Company exists with this name' });
+
+        const { data: existingAdmins, error: adminSearchError } = await supabase
+            .from('users')
+            .select('id')
+            .eq('email', trimmedAdminEmail)
+            .limit(1);
+
+        if (adminSearchError) return res.status(500).json({ success: false, error: 'Error checking existing users' });
+        if (existingAdmins && existingAdmins.length > 0) return res.status(400).json({ error: 'Admin email taken' });
+
+        res.status(200).json({ success: true, message: 'Validation successful' });
+    } catch (error) {
+        console.error('Company Validation error:', error);
+        res.status(500).json({ success: false, error: 'Validation failed', details: error.message });
+    }
+});
 
 // Register Individual
 router.post('/register', async (req, res) => {
