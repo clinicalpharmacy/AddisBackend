@@ -8,15 +8,27 @@ export function isValidEmail(email) {
     return emailRegex.test(email.trim());
 }
 
+// Monthly plan IDs (30 days), yearly plan IDs (365 days)
+const MONTHLY_PLAN_IDS = [
+    'individual_monthly', 'company_basic',
+    'pharmacy_monthly', 'clinic_monthly', 'health_center_monthly',
+    'hospital_monthly', 'pharmacy_school_monthly'
+];
+const YEARLY_PLAN_IDS = [
+    'individual_yearly', 'company_pro',
+    'pharmacy_yearly', 'clinic_yearly', 'health_center_yearly',
+    'hospital_yearly', 'pharmacy_school_yearly'
+];
+
 // Calculate end date for subscription
 export function calculateEndDate(planId) {
     debug.log(`Calculating end date for plan: ${planId}`);
     const endDate = new Date();
 
-    if (planId === 'individual_monthly' || planId === 'company_basic') {
+    if (MONTHLY_PLAN_IDS.includes(planId)) {
         // EXACTLY 30 days
         endDate.setDate(endDate.getDate() + 30);
-    } else if (planId === 'individual_yearly' || planId === 'company_pro') {
+    } else if (YEARLY_PLAN_IDS.includes(planId)) {
         // EXACTLY 365 days
         endDate.setDate(endDate.getDate() + 365);
     } else {
@@ -32,30 +44,106 @@ export function calculateEndDate(planId) {
 // Get plan details
 export function getPlanDetails(planId) {
     const plans = {
+        // ── Legacy / backward-compatible plan IDs ──────────────────────────
         'individual_monthly': {
             name: 'Individual Monthly',
-            price: 300,
+            price: 345, // 300 + 15% VAT
             interval: 'month',
             user_limit: 1,
             currency: 'ETB'
         },
         'individual_yearly': {
             name: 'Individual Yearly',
-            price: 3000,
+            price: 3450, // 3000 + 15% VAT
             interval: 'year',
             user_limit: 1,
             currency: 'ETB'
         },
         'company_basic': {
             name: 'Company Monthly',
-            price: 3000,
+            price: 3450, // 3000 + 15% VAT
             interval: 'month',
             user_limit: 5,
             currency: 'ETB'
         },
         'company_pro': {
             name: 'Company Yearly',
-            price: 25000,
+            price: 28750, // 25000 + 15% VAT
+            interval: 'year',
+            user_limit: 20,
+            currency: 'ETB'
+        },
+        // ── Pharmacy / Drug Store ──────────────────────────────────────────
+        'pharmacy_monthly': {
+            name: 'Pharmacy / Drug Store Monthly',
+            price: 1035, // 900 + 15% VAT
+            interval: 'month',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        'pharmacy_yearly': {
+            name: 'Pharmacy / Drug Store Yearly',
+            price: 10350, // 9000 + 15% VAT
+            interval: 'year',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        // ── Clinic / Specialty Center ──────────────────────────────────────
+        'clinic_monthly': {
+            name: 'Clinic / Specialty Center Monthly',
+            price: 1035, // 900 + 15% VAT
+            interval: 'month',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        'clinic_yearly': {
+            name: 'Clinic / Specialty Center Yearly',
+            price: 10350, // 9000 + 15% VAT
+            interval: 'year',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        // ── Health Center ──────────────────────────────────────────────────
+        'health_center_monthly': {
+            name: 'Health Center Monthly',
+            price: 1035, // 900 + 15% VAT
+            interval: 'month',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        'health_center_yearly': {
+            name: 'Health Center Yearly',
+            price: 10350, // 9000 + 15% VAT
+            interval: 'year',
+            user_limit: 5,
+            currency: 'ETB'
+        },
+        // ── Hospital ──────────────────────────────────────────────────────
+        'hospital_monthly': {
+            name: 'Hospital Monthly',
+            price: 3450, // 3000 + 15% VAT
+            interval: 'month',
+            user_limit: 20,
+            currency: 'ETB'
+        },
+        'hospital_yearly': {
+            name: 'Hospital Yearly',
+            price: 28750, // 25000 + 15% VAT
+            interval: 'year',
+            user_limit: 20,
+            currency: 'ETB'
+        },
+        // ── Pharmacy School ────────────────────────────────────────────────
+        'pharmacy_school_monthly': {
+            name: 'Pharmacy School Monthly',
+            price: 3450, // 3000 + 15% VAT
+            interval: 'month',
+            user_limit: 20,
+            currency: 'ETB'
+        },
+        'pharmacy_school_yearly': {
+            name: 'Pharmacy School Yearly',
+            price: 28750, // 25000 + 15% VAT
             interval: 'year',
             user_limit: 20,
             currency: 'ETB'
