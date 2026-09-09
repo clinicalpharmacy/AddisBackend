@@ -1,6 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { isValidEmail } from '../utils/helpers.js';
@@ -206,6 +207,20 @@ router.post('/login', async (req, res) => {
         const isEffectivelyCompanyUser = userType === 'company_user' || !!companyId;
         const account_type_to_use = isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual');
 
+        // 🛡️ ONE ACTIVE SESSION PER USER ACCOUNT
+        const sessionId = uuidv4();
+        
+        try {
+            const { error: sessionErr } = await db.from('active_sessions').upsert({
+                user_id: user.id,
+                session_id: sessionId,
+                last_seen_at: new Date().toISOString()
+            });
+            if (sessionErr) console.error('Failed to create active session:', sessionErr.message);
+        } catch (err) {
+            console.error('Active session upsert error:', err);
+        }
+
         const tokenPayload = {
             userId: user.id,
             email: user.email,
@@ -214,7 +229,8 @@ router.post('/login', async (req, res) => {
             approved: user.approved,
             account_type: account_type_to_use,
             user_type: userType,
-            company_id: companyId
+            company_id: companyId,
+            session_id: sessionId
         };
 
         const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });

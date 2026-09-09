@@ -3,7 +3,7 @@ import { config } from '../config/env.js';
 import { supabase } from '../config/supabase.js';
 
 // Authentication middleware
-export const authenticateToken = (req, res, next) => {
+export const authenticateToken = async (req, res, next) => {
     try {
         const authHeader = req.headers['authorization'];
         const token = authHeader && authHeader.split(' ')[1];
@@ -16,6 +16,25 @@ export const authenticateToken = (req, res, next) => {
         }
 
         const user = jwt.verify(token, config.jwtSecret);
+        
+        // 🛡️ ONE ACTIVE SESSION VERIFICATION
+        if (user.session_id) {
+            const { data: activeSession, error } = await supabase
+                .from('active_sessions')
+                .select('session_id')
+                .eq('user_id', user.userId)
+                .maybeSingle();
+                
+            if (!error && activeSession) {
+                if (activeSession.session_id !== user.session_id) {
+                    return res.status(401).json({
+                        success: false,
+                        error: 'Session expired. You have logged in from another device.'
+                    });
+                }
+            }
+        }
+
         req.user = user;
         next();
     } catch (error) {
