@@ -707,7 +707,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Get ONLY the searched medications that match this rule
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
-            const medsStr = matchedSearchedMeds.length > 0 ? `[${matchedSearchedMeds.join(', ')}] ` : '';
+            const capitalizedMeds = matchedSearchedMeds.map(m => 
+                m.charAt(0).toUpperCase() + m.slice(1)
+            );
+            const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
             // ============================================
             // Handle Drug Interactions - ONLY for multiple drugs
