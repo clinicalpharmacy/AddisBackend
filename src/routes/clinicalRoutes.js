@@ -707,7 +707,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Get ONLY the searched medications that match this rule
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
-            const medsStr = matchedSearchedMeds.length > 0 ? ` [${matchedSearchedMeds.join(', ')}]` : '';
+            const medsStr = matchedSearchedMeds.length > 0 ? `[${matchedSearchedMeds.join(', ')}] ` : '';
 
             // ============================================
             // Handle Drug Interactions - ONLY for multiple drugs
@@ -813,7 +813,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
                 safetyProfile.categories.pregnancy = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
@@ -822,7 +822,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
                 safetyProfile.categories.lactation = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
@@ -831,7 +831,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
                 safetyProfile.categories.elderly = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
@@ -840,7 +840,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
                 safetyProfile.categories.neonate = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
@@ -855,7 +855,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             )) {
                 safetyProfile.categories.kidney_failure = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
@@ -871,7 +871,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             )) {
                 safetyProfile.categories.liver_failure = { 
                     status, 
-                    details: detail + medsStr,
+                    details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
