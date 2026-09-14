@@ -665,6 +665,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return m1.includes(m2) || m2.includes(m1);
         };
 
+        // Capitalize the first letter of a medication name
+        const capitalizeMed = (name) => {
+            if (!name) return '';
+            return name.charAt(0).toUpperCase() + name.slice(1);
+        };
+
         // Helper: Check if a rule is an interaction rule
         const isInteractionRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
@@ -743,7 +749,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
                             const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
                             if (med1InRule && med2InRule) {
-                                interactions.push(`${med1} + ${med2}`);
+                                interactions.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
                             }
                         }
                     }
@@ -793,7 +799,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                             const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
                             const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
                             if (med1InRule && med2InRule) {
-                                incompatibilities.push(`${med1} + ${med2}`);
+                                incompatibilities.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
                             }
                         }
                     }
