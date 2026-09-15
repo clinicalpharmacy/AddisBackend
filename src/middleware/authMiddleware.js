@@ -1,6 +1,9 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
+
+// Use admin client to bypass RLS for session checks
+const db = supabaseAdmin || supabase;
 
 // Authentication middleware
 export const authenticateToken = async (req, res, next) => {
@@ -19,7 +22,7 @@ export const authenticateToken = async (req, res, next) => {
         
         // 🛡️ ONE ACTIVE SESSION VERIFICATION
         if (user.session_id) {
-            const { data: sessions, error } = await supabase
+            const { data: sessions, error } = await db
                 .from('active_sessions')
                 .select('session_id')
                 .eq('user_id', user.userId)
