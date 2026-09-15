@@ -19,14 +19,15 @@ export const authenticateToken = async (req, res, next) => {
         
         // 🛡️ ONE ACTIVE SESSION VERIFICATION
         if (user.session_id) {
-            const { data: activeSession, error } = await supabase
+            const { data: sessions, error } = await supabase
                 .from('active_sessions')
                 .select('session_id')
                 .eq('user_id', user.userId)
-                .maybeSingle();
+                .order('last_seen_at', { ascending: false })
+                .limit(1);
                 
-            if (!error && activeSession) {
-                if (activeSession.session_id !== user.session_id) {
+            if (!error && sessions && sessions.length > 0) {
+                if (sessions[0].session_id !== user.session_id) {
                     return res.status(401).json({
                         success: false,
                         error: 'Session expired. You have logged in from another device.'

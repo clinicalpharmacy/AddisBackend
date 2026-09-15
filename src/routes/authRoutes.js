@@ -243,14 +243,25 @@ router.post('/login', async (req, res) => {
         const sessionId = uuidv4();
         
         try {
-            const { error: sessionErr } = await db.from('active_sessions').upsert({
+            // First, delete any existing sessions for this user
+            const { error: deleteErr } = await db.from('active_sessions')
+                .delete()
+                .eq('user_id', user.id);
+            if (deleteErr) console.error('Failed to delete old session:', deleteErr.message);
+
+            // Then insert the new session
+            const { error: insertErr } = await db.from('active_sessions').insert({
                 user_id: user.id,
                 session_id: sessionId,
                 last_seen_at: new Date().toISOString()
             });
-            if (sessionErr) console.error('Failed to create active session:', sessionErr.message);
+            if (insertErr) {
+                console.error('Failed to insert active session:', insertErr.message);
+            } else {
+                console.log(`✅ Active session created for user ${user.id} (session: ${sessionId.substring(0, 8)}...)`);
+            }
         } catch (err) {
-            console.error('Active session upsert error:', err);
+            console.error('Active session error:', err);
         }
 
         const tokenPayload = {
