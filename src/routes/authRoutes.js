@@ -207,33 +207,8 @@ router.post('/login', async (req, res) => {
         const isEffectivelyCompanyUser = userType === 'company_user' || !!companyId;
         const account_type_to_use = isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual');
 
-        // 🛡️ ONE ACTIVE SESSION PER USER ACCOUNT
-        const sessionId = uuidv4();
-        
-        try {
-            const { error: sessionErr } = await db.from('active_sessions').upsert({
-                user_id: user.id,
-                session_id: sessionId,
-                last_seen_at: new Date().toISOString()
-            });
-            if (sessionErr) console.error('Failed to create active session:', sessionErr.message);
-        } catch (err) {
-            console.error('Active session upsert error:', err);
-        }
 
-        const tokenPayload = {
-            userId: user.id,
-            email: user.email,
-            name: user.full_name,
-            role: user.role,
-            approved: user.approved,
-            account_type: account_type_to_use,
-            user_type: userType,
-            company_id: companyId,
-            session_id: sessionId
-        };
 
-        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
         let companyData = null;
         if (companyId) {
@@ -262,6 +237,35 @@ router.post('/login', async (req, res) => {
                 console.warn('⚠️ [FIX] User sync warning:', syncError.message);
             }
         }
+
+        // 🛡️ ONE ACTIVE SESSION PER USER ACCOUNT
+        // Placed after the user sync to ensure foreign key constraint passes for company users
+        const sessionId = uuidv4();
+        
+        try {
+            const { error: sessionErr } = await db.from('active_sessions').upsert({
+                user_id: user.id,
+                session_id: sessionId,
+                last_seen_at: new Date().toISOString()
+            });
+            if (sessionErr) console.error('Failed to create active session:', sessionErr.message);
+        } catch (err) {
+            console.error('Active session upsert error:', err);
+        }
+
+        const tokenPayload = {
+            userId: user.id,
+            email: user.email,
+            name: user.full_name,
+            role: user.role,
+            approved: user.approved,
+            account_type: account_type_to_use,
+            user_type: userType,
+            company_id: companyId,
+            session_id: sessionId
+        };
+
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
         let hasCompanySubscription = companyData && companyData.subscription_status === 'active';
 
