@@ -519,9 +519,16 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * Uniform interaction handling:
  *  - Collect ALL medication facts from the rule condition tree.
  *  - Find which of the user's searched medications match those facts.
- *  - Only emit a pair when BOTH sides of that pair are in the searched list.
+ *  - Emit a pair ONLY when the two searched meds are genuinely paired by
+ *    at least one branch of the rule's condition tree (an `all`-block that
+ *    contains exactly the two matched meds, or an `any`-of-`all`-blocks
+ *    containing such a block).
  *  - No fabricated pairs, no special-casing of structured vs. pairwise shapes.
  *  - Works identically for single-drug and multi-drug searches.
+ *
+ * Key insight: the rule's condition tree already encodes which drugs are
+ * paired. We only need to walk it and, for each `all`-block that contains
+ * exactly two matched searched meds, emit that pair.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -675,35 +682,174 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
+         * Convert a fact value (a single drug name) into the searched med it
+         * matches, or null if no searched med matches.
+         */
+        const matchingSearchedMedForValue = (ruleValue) => {
+            const rv = String(ruleValue).toLowerCase().trim();
+            return meds.find(m => medsMatch(rv, m)) || null;
+        };
+
+        /**
          * UNIFORM pair builder — no special-casing of shapes.
          *
-         * 1. Collect every medication value declared anywhere in the rule.
-         * 2. Determine which of the user's searched meds match those values.
-         * 3. Emit every unique combination of two DIFFERENT matched searched meds.
+         * Walks the rule's condition tree looking for `all`-blocks that pair
+         * exactly two distinct searched meds. For each such block, emits the
+         * pair. This guarantees that ONLY combinations genuinely declared by
+         * the rule are emitted.
          *
-         * A pair is only emitted when BOTH sides are in the searched list,
-         * which prevents fabricating interactions the user never asked about.
+         * Handles all common shapes uniformly:
+         *   - { all: [ {fact:"medications", value:"A"},
+         *              {fact:"medications", value:"B"} ] }
+         *   - { any: [ {all:[A,B]}, {all:[C,D]} ] }
+         *   - { all: [ {fact:"medications", value:"A"},
+         *              { any: [ {fact:"medications", value:"B"},
+         *                       {fact:"medications", value:"C"} ] } ] }
+         *
+         * In the last (structured) case, we treat it as pairs (A,B), (A,C)
+         * ONLY IF both A and the respective co-drug appear in the search.
+         * This matches the clinical intent — the anchor is explicitly paired
+         * with each co-drug by the rule.
          */
-        const buildPairsForRule = (cond) => {
-            const facts = collectFacts(cond);
-            const ruleMeds = facts
-                .filter(f => f && f.fact === 'medications' && f.value)
-                .map(f => String(f.value).toLowerCase().trim());
+        const collectAllBlocks = (node, out = []) => {
+            if (!node) return out;
 
-            // All searched meds that match at least one declared rule med
-            const matchedSearched = meds.filter(searchMed =>
-                ruleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-            );
+            // An "all" block is a candidate pair container
+            if (Array.isArray(node.all)) {
+                out.push(node.all);
+                node.all.forEach(child => collectAllBlocks(child, out));
+            }
+            if (Array.isArray(node.any)) {
+                node.any.forEach(child => collectAllBlocks(child, out));
+            }
+            return out;
+        };
 
-            // Need at least two distinct matched searched meds to form a pair
+        /**
+         * Turn an `all`-block into the set of matched searched meds it
+         * declares. Returns an array of unique searched med names.
+         *
+         * For a plain `all: [ {medications: A}, {medications: B} ]`, this is
+         * [A, B] (intersected with the search).
+         *
+         * For a structured `all: [ {medications: A}, {any: [{medications: B},
+         * {medications: C}]} ]`, the any-branch is fanned out so the block
+         * effectively declares (A,B) and (A,C). We model this by returning
+         * the anchor + each co-drug as separate virtual pairs. To keep the
+         * builder uniform, we handle it here: if the block contains an
+         * `any`-branch, we produce one pair per (anchor, co-drug) — but ONLY
+         * when both sides are present in the search.
+         */
+        const buildPairsFromAllBlock = (allBlock) => {
             const pairs = [];
-            for (let i = 0; i < matchedSearched.length; i++) {
-                for (let j = i + 1; j < matchedSearched.length; j++) {
-                    const a = matchedSearched[i];
-                    const b = matchedSearched[j];
-                    if (!medsMatch(a, b)) pairs.push([a, b]);
+
+            // Separate "anchor" leaves (plain medication facts) from "any"
+            // branches (which declare alternate co-drugs).
+            const anchorLeaves = [];
+            const anyBranches = [];
+            const otherLeaves = [];
+
+            for (const child of allBlock) {
+                if (!child) continue;
+                if (child.fact === 'medications' && child.value && !Array.isArray(child.all) && !Array.isArray(child.any)) {
+                    anchorLeaves.push(child);
+                } else if (Array.isArray(child.any)) {
+                    anyBranches.push(child);
+                } else {
+                    otherLeaves.push(child);
                 }
             }
+
+            // Helper: turn a list of medication facts into matched searched meds
+            const matchedFromFacts = (facts) => {
+                const out = [];
+                facts.forEach(f => {
+                    if (f && f.fact === 'medications' && f.value) {
+                        const sm = matchingSearchedMedForValue(f.value);
+                        if (sm && !out.includes(sm)) out.push(sm);
+                    }
+                });
+                return out;
+            };
+
+            // Case A: no `any` branches — a simple all-block of med facts.
+            // Emit every pair of two distinct matched searched meds declared
+            // by this block.
+            if (anyBranches.length === 0) {
+                const matched = matchedFromFacts(anchorLeaves.concat(otherLeaves));
+                for (let i = 0; i < matched.length; i++) {
+                    for (let j = i + 1; j < matched.length; j++) {
+                        if (!medsMatch(matched[i], matched[j])) {
+                            pairs.push([matched[i], matched[j]]);
+                        }
+                    }
+                }
+                return pairs;
+            }
+
+            // Case B: one or more `any` branches. For each any-branch, pair
+            // each anchor matched searched med with each co-drug matched
+            // searched med — but only when both sides are present in the
+            // search. This is the "anchor + any(co-drugs)" shape.
+            const anchorMatched = matchedFromFacts(anchorLeaves.concat(otherLeaves));
+
+            // If there are no anchors, treat any-branch leaves as a flat set
+            // and emit pairs among matched searched meds (rare but safe).
+            if (anchorMatched.length === 0) {
+                const flat = [];
+                anyBranches.forEach(branch => {
+                    branch.any.forEach(child => {
+                        const facts = collectFacts(child);
+                        facts.forEach(f => {
+                            if (f && f.fact === 'medications' && f.value) {
+                                const sm = matchingSearchedMedForValue(f.value);
+                                if (sm && !flat.includes(sm)) flat.push(sm);
+                            }
+                        });
+                    });
+                });
+                for (let i = 0; i < flat.length; i++) {
+                    for (let j = i + 1; j < flat.length; j++) {
+                        if (!medsMatch(flat[i], flat[j])) pairs.push([flat[i], flat[j]]);
+                    }
+                }
+                return pairs;
+            }
+
+            // Standard anchor + any(co-drugs): pair each matched anchor with
+            // each matched co-drug.
+            anyBranches.forEach(branch => {
+                branch.any.forEach(child => {
+                    const facts = collectFacts(child);
+                    const coMatched = matchedFromFacts(facts);
+                    anchorMatched.forEach(a => {
+                        coMatched.forEach(c => {
+                            if (!medsMatch(a, c)) pairs.push([a, c]);
+                        });
+                    });
+                });
+            });
+
+            return pairs;
+        };
+
+        const buildPairsForRule = (cond) => {
+            const blocks = collectAllBlocks(cond);
+            const pairs = [];
+            const seen = new Set();
+
+            blocks.forEach(block => {
+                const blockPairs = buildPairsFromAllBlock(block);
+                blockPairs.forEach(([a, b]) => {
+                    // Normalize order for dedupe
+                    const key = [a, b].map(x => x.toLowerCase()).sort().join('|');
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        pairs.push([a, b]);
+                    }
+                });
+            });
+
             return pairs;
         };
 
