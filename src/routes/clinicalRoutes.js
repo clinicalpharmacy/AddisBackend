@@ -529,6 +529,10 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  *  - Drops a rule's message from the output when the message doesn't
  *    reference any of the drugs in the emitted pair (defensive against
  *    mislabeled rules in the DB).
+ *
+ * The messages produced here are preserved exactly as before:
+ *     "<Drug A> + <Drug B> — <rule.rule_action.message_client>"
+ * where the message is only appended to pairs the rule really declares.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -581,17 +585,17 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (!node) return [];
             const results = [];
             if (node.fact) results.push(node);
-            if (Array.isArray(node.all)) node.all.forEach(c => results.push(...collectFacts(c)));
-            if (Array.isArray(node.any)) node.any.forEach(c => results.push(...collectFacts(c)));
+            if (Array.isArray(node.all)) node.all.forEach(child => results.push(...collectFacts(child)));
+            if (Array.isArray(node.any)) node.any.forEach(child => results.push(...collectFacts(child)));
             return results;
         };
 
         /**
          * Check if two medication names match (substring match either way).
          */
-        const medsMatch = (a, b) => {
-            const m1 = String(a).toLowerCase().trim();
-            const m2 = String(b).toLowerCase().trim();
+        const medsMatch = (med1, med2) => {
+            const m1 = String(med1).toLowerCase().trim();
+            const m2 = String(med2).toLowerCase().trim();
             return m1.includes(m2) || m2.includes(m1);
         };
 
@@ -614,12 +618,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         /**
          * Evaluate whether the searched `meds` list satisfies a rule condition
          * tree, honouring `all` / `any` structure.
-         *
-         *   all: [...]            → every branch must be satisfied
-         *   any: [...]            → at least one branch must be satisfied
-         *   { fact: "medications" }→ search contains this drug
-         *   other facts (age, etc.)→ not our concern; return true so the
-         *                            medication logic drives the decision
          */
         const conditionSatisfiedByMeds = (node) => {
             if (!node) return false;
@@ -644,6 +642,24 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
             return facts.some(f => f.fact === 'medications' && f.value && searchContainsMed(f.value));
+        };
+
+        /**
+         * Get ONLY the searched medications that match the condition.
+         */
+        const getMatchingSearchedMeds = (condition) => {
+            const facts = collectFacts(condition);
+            const matchedMeds = [];
+            facts.forEach(f => {
+                if (f.fact === 'medications' && f.value) {
+                    meds.forEach(searchMed => {
+                        if (medsMatch(f.value, searchMed) && !matchedMeds.includes(searchMed)) {
+                            matchedMeds.push(searchMed);
+                        }
+                    });
+                }
+            });
+            return matchedMeds;
         };
 
         /**
@@ -718,7 +734,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const drugsInPair = pair.split('+').map(s => s.trim().toLowerCase()).filter(Boolean);
             const msgLower = message.toLowerCase();
 
-            // Message is fine if it names any drug from the pair.
             const mentionsPairDrug = drugsInPair.some(d => msgLower.includes(d));
             if (mentionsPairDrug) return pairLine;
 
@@ -802,14 +817,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         rules.forEach(rule => {
             const cond = rule.rule_condition;
 
-            // Skip rules that don't have a condition
             if (!cond) return;
 
             // Cheap early-out — the rule must mention at least one searched drug
             if (!hasMedication(cond)) return;
 
-            // Structural gate: the searched meds must satisfy the WHOLE rule,
-            // not just one branch.
+            // Structural gate: the searched meds must satisfy the WHOLE rule.
             if (!conditionSatisfiedByMeds(cond)) {
                 console.log(`⏭️  Rule "${rule.rule_name}" rejected: search does not satisfy full condition`);
                 return;
@@ -826,17 +839,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // Matched searched meds (for bracket annotations on categories)
-            const matchedSearchedMeds = (() => {
-                const found = [];
-                allFacts.forEach(f => {
-                    if (f.fact === 'medications' && f.value) {
-                        meds.forEach(m => {
-                            if (medsMatch(f.value, m) && !found.includes(m)) found.push(m);
-                        });
-                    }
-                });
-                return found;
-            })();
+            const matchedSearchedMeds = getMatchingSearchedMeds(cond);
             const capitalizedMeds = matchedSearchedMeds.map(m => capitalizeMed(m));
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
