@@ -516,19 +516,33 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
 /**
  * Quick Safety Check (Database-driven instead of AI)
  *
- * Uniform interaction handling:
- *  - Collect ALL medication facts from the rule condition tree.
- *  - Find which of the user's searched medications match those facts.
- *  - Emit a pair ONLY when the two searched meds are genuinely paired by
- *    at least one branch of the rule's condition tree (an `all`-block that
- *    contains exactly the two matched meds, or an `any`-of-`all`-blocks
- *    containing such a block).
- *  - No fabricated pairs, no special-casing of structured vs. pairwise shapes.
- *  - Works identically for single-drug and multi-drug searches.
+ * ─────────────────────────────────────────────────────────────────────
+ * DETECTION STRATEGY (REVISED)
+ * ─────────────────────────────────────────────────────────────────────
+ * Rules may be stored in one of two shapes in `clinical_rules`:
  *
- * Key insight: the rule's condition tree already encodes which drugs are
- * paired. We only need to walk it and, for each `all`-block that contains
- * exactly two matched searched meds, emit that pair.
+ *   A) FULL RULE — includes rule_name / rule_type / severity / rule_action
+ *      plus a `rule_condition` tree.
+ *
+ *   B) BARE CONDITION TREE — only `rule_condition` holds a condition tree
+ *      like { any: [ {all:[...]}, {all:[...]} ] } with no metadata.
+ *
+ * The previous version of `isInteractionRule` only handled case (A). When a
+ * rule was stored as case (B) — which is what the ClinicalPharmacyTool rule
+ * files use — `String(rule.rule_name).toLowerCase()` produced "undefined" /
+ * "null", the `.includes('interaction')` check failed, and the rule was
+ * silently skipped.
+ *
+ * This revision adds a STRUCTURAL FALLBACK: if the metadata is missing, we
+ * inspect the shape of `rule_condition` and classify it as an interaction
+ * when its top-level `any` contains `all`-blocks that reference medication
+ * facts. That is exactly the shape of the rule file you're using.
+ *
+ * Additional defensive changes:
+ *   - `rule_condition` is JSON-parsed if it arrives as a string (text column).
+ *   - `severity`, `msg`, and `rec` have safe defaults so the emitted
+ *     interaction line always contains " + " and passes the frontend filter.
+ * ─────────────────────────────────────────────────────────────────────
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -659,26 +673,78 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Is the rule an interaction rule?
+         * 🔧 REVISED — Is the rule an interaction rule?
+         *
+         * Priority:
+         *   1. Explicit metadata (rule_type / rule_name containing "interaction")
+         *   2. Structural inference from the condition tree. A rule whose
+         *      top-level condition is `{ any: [ {all:[...]}, {all:[...]}, ... ] }`
+         *      where each `all`-block references medication facts is treated
+         *      as an interaction rule.
+         *
+         * This makes the endpoint work with rule files that contain ONLY a
+         * condition tree (no rule_name / rule_type), such as the levothyroxine
+         * / calcium / iron / PPI rule used by ClinicalPharmacyTool.
          */
-        const isInteractionRule = (rule) => {
-            const lowerName = String(rule.rule_name).toLowerCase();
-            const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType.includes('drug_interaction') ||
-                   lowerName.includes('interaction') ||
-                   lowerName.includes('drug interaction');
+        const isInteractionRule = (rule, parsedCondition) => {
+            const lowerName = String(rule.rule_name || '').toLowerCase();
+            const lowerType = String(rule.rule_type || '').toLowerCase();
+
+            // 1. Explicit metadata wins
+            if (
+                lowerType.includes('drug_interaction') ||
+                lowerType.includes('interaction') ||
+                lowerName.includes('interaction') ||
+                lowerName.includes('drug interaction')
+            ) {
+                return true;
+            }
+
+            // 2. Structural fallback
+            const cond = parsedCondition || rule.rule_condition;
+            if (!cond || typeof cond !== 'object') return false;
+
+            // Shape A: { any: [ {all:[...]}, {all:[...]}, ... ] }
+            // Every `all`-block must reference at least one medications fact.
+            if (Array.isArray(cond.any) && cond.any.length > 0) {
+                const allBlocks = cond.any.filter(b => Array.isArray(b.all));
+                if (allBlocks.length > 0) {
+                    const allReferenceMeds = allBlocks.every(block =>
+                        block.all.some(c => c.fact === 'medications' && c.value)
+                    );
+                    if (allReferenceMeds) return true;
+                }
+            }
+
+            // Shape B: { all: [ {medications:...}, {any:[...]} ] }
+            if (Array.isArray(cond.all)) {
+                const hasMeds = cond.all.some(c => c.fact === 'medications' && c.value);
+                if (hasMeds) return true;
+            }
+
+            return false;
         };
 
         /**
-         * Is the rule an IV incompatibility rule?
+         * 🔧 REVISED — Is the rule an IV incompatibility rule?
+         *
+         * Same fallback strategy as `isInteractionRule`, but for IV rules.
+         * We only infer structurally when a rule is very clearly IV-shaped
+         * (metadata mentions IV / incompat) — otherwise a plain interaction
+         * rule could be misclassified. In practice IV rules should always
+         * carry a rule_type, so the metadata check is usually sufficient.
          */
         const isIVIncompatibilityRule = (rule) => {
-            const lowerName = String(rule.rule_name).toLowerCase();
-            const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType === 'iv incompatibility' ||
-                   lowerName.includes('iv drug incompatibility') ||
-                   lowerName.includes('iv incompatibility') ||
-                   lowerName.includes('iv incompat');
+            const lowerName = String(rule.rule_name || '').toLowerCase();
+            const lowerType = String(rule.rule_type || '').toLowerCase();
+            return (
+                lowerType === 'iv incompatibility' ||
+                lowerType.includes('iv_incompatibility') ||
+                lowerType.includes('iv incompatibility') ||
+                lowerName.includes('iv drug incompatibility') ||
+                lowerName.includes('iv incompatibility') ||
+                lowerName.includes('iv incompat')
+            );
         };
 
         /**
@@ -692,24 +758,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         /**
          * UNIFORM pair builder — no special-casing of shapes.
-         *
-         * Walks the rule's condition tree looking for `all`-blocks that pair
-         * exactly two distinct searched meds. For each such block, emits the
-         * pair. This guarantees that ONLY combinations genuinely declared by
-         * the rule are emitted.
-         *
-         * Handles all common shapes uniformly:
-         *   - { all: [ {fact:"medications", value:"A"},
-         *              {fact:"medications", value:"B"} ] }
-         *   - { any: [ {all:[A,B]}, {all:[C,D]} ] }
-         *   - { all: [ {fact:"medications", value:"A"},
-         *              { any: [ {fact:"medications", value:"B"},
-         *                       {fact:"medications", value:"C"} ] } ] }
-         *
-         * In the last (structured) case, we treat it as pairs (A,B), (A,C)
-         * ONLY IF both A and the respective co-drug appear in the search.
-         * This matches the clinical intent — the anchor is explicitly paired
-         * with each co-drug by the rule.
          */
         const collectAllBlocks = (node, out = []) => {
             if (!node) return out;
@@ -725,21 +773,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return out;
         };
 
-        /**
-         * Turn an `all`-block into the set of matched searched meds it
-         * declares. Returns an array of unique searched med names.
-         *
-         * For a plain `all: [ {medications: A}, {medications: B} ]`, this is
-         * [A, B] (intersected with the search).
-         *
-         * For a structured `all: [ {medications: A}, {any: [{medications: B},
-         * {medications: C}]} ]`, the any-branch is fanned out so the block
-         * effectively declares (A,B) and (A,C). We model this by returning
-         * the anchor + each co-drug as separate virtual pairs. To keep the
-         * builder uniform, we handle it here: if the block contains an
-         * `any`-branch, we produce one pair per (anchor, co-drug) — but ONLY
-         * when both sides are present in the search.
-         */
         const buildPairsFromAllBlock = (allBlock) => {
             const pairs = [];
 
@@ -773,8 +806,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             };
 
             // Case A: no `any` branches — a simple all-block of med facts.
-            // Emit every pair of two distinct matched searched meds declared
-            // by this block.
             if (anyBranches.length === 0) {
                 const matched = matchedFromFacts(anchorLeaves.concat(otherLeaves));
                 for (let i = 0; i < matched.length; i++) {
@@ -787,14 +818,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 return pairs;
             }
 
-            // Case B: one or more `any` branches. For each any-branch, pair
-            // each anchor matched searched med with each co-drug matched
-            // searched med — but only when both sides are present in the
-            // search. This is the "anchor + any(co-drugs)" shape.
+            // Case B: one or more `any` branches.
             const anchorMatched = matchedFromFacts(anchorLeaves.concat(otherLeaves));
 
-            // If there are no anchors, treat any-branch leaves as a flat set
-            // and emit pairs among matched searched meds (rare but safe).
+            // If there are no anchors, treat any-branch leaves as a flat set.
             if (anchorMatched.length === 0) {
                 const flat = [];
                 anyBranches.forEach(branch => {
@@ -856,7 +883,16 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // ── Main loop ─────────────────────────────────────────────────────
 
         rules.forEach(rule => {
-            const cond = rule.rule_condition;
+            // 🔧 Parse rule_condition defensively — it may be a text column.
+            let cond = rule.rule_condition;
+            if (typeof cond === 'string') {
+                try {
+                    cond = JSON.parse(cond);
+                } catch (e) {
+                    console.error(`❌ Rule ${rule.id} has invalid JSON in rule_condition:`, e.message);
+                    return;
+                }
+            }
 
             if (!cond) return;
 
@@ -870,14 +906,23 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
 
             const allFacts = collectFacts(cond);
-            const severity = rule.severity;
-            const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
-            const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
-            const detail = (rec ? `${msg} ${rec}` : msg);
+
+            // 🔧 Safe defaults — some rules have no metadata at all.
+            const severity = rule.severity || 'high';
+            const msg =
+                rule.rule_action?.message_client ||
+                rule.rule_action?.message ||
+                rule.rule_name ||
+                'Potential drug interaction detected.';
+            const rec =
+                rule.rule_action?.recommendation_client ||
+                rule.rule_action?.recommendation ||
+                'Review administration timing and consult clinical guidelines.';
+            const detail = rec ? `${msg} ${rec}` : msg;
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
 
-            const lowerRuleName = String(rule.rule_name).toLowerCase();
-            const lowerRuleType = String(rule.rule_type).toLowerCase();
+            const lowerRuleName = String(rule.rule_name || '').toLowerCase();
+            const lowerRuleType = String(rule.rule_type || '').toLowerCase();
 
             // Matched searched meds (for bracket annotations on categories)
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
@@ -887,11 +932,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             // ============================================
             // Handle Drug Interactions
             // ============================================
-            if (isInteractionRule(rule)) {
+            if (isInteractionRule(rule, cond)) {
                 const pairs = buildPairsForRule(cond);
 
                 if (pairs.length === 0) {
-                    console.log(`⏭️  Interaction rule "${rule.rule_name}": no complete pair in search; skipping`);
+                    console.log(`⏭️  Interaction rule "${rule.rule_name || rule.id}": no complete pair in search; skipping`);
                 } else {
                     const lines = [];
                     pairs.forEach(([a, b]) => {
@@ -914,7 +959,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const pairs = buildPairsForRule(cond);
 
                 if (pairs.length === 0) {
-                    console.log(`⏭️  IV rule "${rule.rule_name}": no complete pair in search; skipping`);
+                    console.log(`⏭️  IV rule "${rule.rule_name || rule.id}": no complete pair in search; skipping`);
                 } else {
                     const lines = [];
                     pairs.forEach(([a, b]) => {
@@ -1065,8 +1110,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         });
 
         // Remove duplicates from interactions and incompatibilities
-        safetyProfile.major_interactions    = [...new Set(safetyProfile.major_interactions)];
-        safetyProfile.iv_incompatibility    = [...new Set(safetyProfile.iv_incompatibility)];
+        safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
+        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
 
         // Log the results for debugging
         console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
@@ -1169,8 +1214,6 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         delete updates.id;
         delete updates.user_id;
         delete updates.patient_code;
-        // Now that patient_id is added, we allow it to be updated or persisted
-        // delete updates.patient_id;
 
         // Resolve patient context (Code lookups removed as patient_code does not exist)
         if (updates.patient_id) {
