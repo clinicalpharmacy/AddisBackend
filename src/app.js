@@ -26,6 +26,7 @@ import encryptionRoutes from './routes/encryptionRoutes.js';
 import accessRoutes from './routes/accessRoutes.js';
 import examRoutes from './routes/examRoutes.js';
 import studentExamRoutes from './routes/studentExamRoutes.js';
+import vacancyRoutes from './routes/vacancyRoutes.js';
 
 const app = express();
 
@@ -94,6 +95,7 @@ app.use('/api/encryption', encryptionRoutes);
 app.use('/api/access', accessRoutes);
 app.use('/api/admin/exams', examRoutes);
 app.use('/api/exams', studentExamRoutes);
+app.use('/api', vacancyRoutes);
 
 // 404 Handler
 app.use((req, res) => {
