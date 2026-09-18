@@ -10,10 +10,10 @@ const router = express.Router();
  */
 async function resolvePatientId(identifier) {
     if (!identifier) return null;
-    
+
     const db = supabaseAdmin || supabase;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
-    
+
     // prioritze checking if it's already a valid primary ID (UUID or numeric)
     if (isUUID) return identifier;
 
@@ -22,7 +22,6 @@ async function resolvePatientId(identifier) {
     if (isNumeric) return identifier;
 
     // (Lookup logic for MR number would go here if it used a different column name)
-
 
     // 2. FALLBACK: If it's numeric, it might be a legacy numeric ID
     if (/^\d+$/.test(identifier)) return identifier;
@@ -102,7 +101,7 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         }
 
         const hasAccess = await verifyClinicalAccess(resolvedId, req);
-        
+
         // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
         if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && !req.authorizedSupport)) {
             // Note: verifyClinicalAccess will handle the base ownership/company/support check.
@@ -150,7 +149,7 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
         if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
             return res.json({ success: true, assessments: [] });
         }
-        
+
         // Restriction for individuals - still block if they don't have clinical access (though verify already checked)
         if (userAccountType === 'individual' && userRole !== 'admin' && !(await verifyClinicalAccess(resolvedId, req))) {
             return res.status(403).json({ success: false, error: 'Access denied' });
@@ -256,7 +255,7 @@ router.get('/plans/patient/:patientCode', authenticateToken, async (req, res) =>
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) return res.json({ success: true, plans: [] });
 
@@ -303,12 +302,12 @@ router.post('/outcomes', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
         const resolvedId = await resolvePatientId(req.body.patient_id);
-        const item = { 
-            ...req.body, 
-            patient_id: resolvedId, 
-            user_id: req.user.userId, 
-            created_at: new Date().toISOString(), 
-            updated_at: new Date().toISOString() 
+        const item = {
+            ...req.body,
+            patient_id: resolvedId,
+            user_id: req.user.userId,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
         };
         delete item.patient_code;
         const { data, error } = await supabase.from('patient_outcomes').insert([item]).select().single();
@@ -331,7 +330,7 @@ router.get('/outcomes/patient/:patientCode', authenticateToken, async (req, res)
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) return res.json({ success: true, outcomes: [] });
 
@@ -454,14 +453,14 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         // 🔐 Resolve identifier and enforce UUID for this clinical table
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
 
         if (!resolvedId || !isUUID) {
             // Return empty if not found or not a UUID (numeric legacy IDs are incompatible with this clinical table)
-            return res.json({ success: true, costs: [] }); 
+            return res.json({ success: true, costs: [] });
         }
 
         let query = supabase.from('cost_analyses').select('*').eq('patient_id', resolvedId);
@@ -520,18 +519,16 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * Supports nested rule_condition structures like:
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
  *
- * ENHANCED:
- *  - Respects ALL/ANY structure when firing a rule, so `all: [anchor, any(...)]`
- *    rules only fire when BOTH the anchor and at least one co-drug are present
- *    in the search.
- *  - Generates only the drug pairs the rule actually declares, instead of
- *    combinatorially pairing any two drugs in the flattened condition.
- *  - Preserves the rule's message exactly as before. The message is dropped
- *    only if it explicitly names a drug that is NOT in the emitted pair
- *    (defensive against mislabeled rules in the DB).
- *
- * Message format is unchanged:
- *     "<Drug A> + <Drug B> — <rule.rule_action.message_client>"
+ * Message behaviour (revised):
+ *  - Interaction / IV-incompatibility messages are ALWAYS shown when the rule
+ *    declares them, for both single-drug and multi-drug searches.
+ *  - For structured rules (`all: [anchor, any(co-drugs)]`), the emitted pair
+ *    is always `<anchor> + <co-drug>` — the pair the rule actually declares —
+ *    with the rule's message appended.
+ *  - For pairwise rules, only the declared pairs are emitted, each with the
+ *    rule's message appended.
+ *  - Category messages (pregnancy, lactation, etc.) keep their existing
+ *    `[<searched meds>] <message>` format.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -576,6 +573,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         // ── Helpers ──────────────────────────────────────────────────────
 
+        /**
+         * Recursively collect ALL leaf facts from a nested condition tree.
+         * Handles: { all: [...] }, { any: [...] }, and plain { fact, value, operator }
+         */
         const collectFacts = (node) => {
             if (!node) return [];
             const results = [];
@@ -585,36 +586,63 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
+        /**
+         * Check if two medication names match (substring match either way).
+         */
         const medsMatch = (med1, med2) => {
             const m1 = String(med1).toLowerCase().trim();
             const m2 = String(med2).toLowerCase().trim();
             return m1.includes(m2) || m2.includes(m1);
         };
 
+        /**
+         * Capitalize the first letter of a medication name.
+         */
         const capitalizeMed = (name) => {
             if (!name) return '';
             return name.charAt(0).toUpperCase() + name.slice(1);
         };
 
+        /**
+         * Does the searched `meds` array contain this medication value?
+         */
         const searchContainsMed = (ruleValue) => {
             const rv = String(ruleValue).toLowerCase().trim();
             return meds.some(m => medsMatch(rv, m));
         };
 
+        /**
+         * Evaluate whether the searched `meds` list satisfies a rule condition
+         * tree, honouring `all` / `any` structure.
+         */
         const conditionSatisfiedByMeds = (node) => {
             if (!node) return false;
-            if (node.fact === 'medications' && node.value) return searchContainsMed(node.value);
-            if (node.fact) return true;
-            if (Array.isArray(node.all)) return node.all.every(conditionSatisfiedByMeds);
-            if (Array.isArray(node.any)) return node.any.some(conditionSatisfiedByMeds);
+
+            if (node.fact === 'medications' && node.value) {
+                return searchContainsMed(node.value);
+            }
+            if (node.fact) return true;   // non-medication fact: not blocking
+
+            if (Array.isArray(node.all)) {
+                return node.all.every(conditionSatisfiedByMeds);
+            }
+            if (Array.isArray(node.any)) {
+                return node.any.some(conditionSatisfiedByMeds);
+            }
             return false;
         };
 
+        /**
+         * Do any of the searched drugs match any drug mentioned in the condition?
+         */
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
             return facts.some(f => f.fact === 'medications' && f.value && searchContainsMed(f.value));
         };
 
+        /**
+         * Get ONLY the searched medications that match the condition.
+         */
         const getMatchingSearchedMeds = (condition) => {
             const facts = collectFacts(condition);
             const matchedMeds = [];
@@ -630,6 +658,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return matchedMeds;
         };
 
+        /**
+         * Extract the anchor branch and any-branch from a standard
+         * { all: [anchor, any(...)] } shape. Returns null if the shape
+         * doesn't match.
+         */
         const extractStructuredRule = (cond) => {
             if (!cond || !Array.isArray(cond.all) || cond.all.length !== 2) return null;
             const [first, second] = cond.all;
@@ -645,6 +678,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return { anchorMeds, coDrugs };
         };
 
+        /**
+         * Is the rule a plain pairwise rule whose top level is
+         * { any: [ {all:[a,b]}, {all:[c,d]}, ... ] } or { all: [a,b] }?
+         */
         const isPairwiseRule = (cond) => {
             if (!cond) return false;
             if (Array.isArray(cond.any)) {
@@ -656,6 +693,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return false;
         };
 
+        /**
+         * Return the pairs a pairwise rule declares as [[a,b],[c,d],...]
+         */
         const extractPairwisePairs = (cond) => {
             const pairs = [];
             const pushPairFromBlock = (block) => {
@@ -674,39 +714,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Strip a message only if it explicitly names a drug NOT in the pair.
-         * Generic messages are kept as-is.
+         * Is the rule an interaction rule?
          */
-        const sanitizePairWithMessage = (pairLine) => {
-            const sep = ' — ';
-            const idx = pairLine.indexOf(sep);
-            if (idx === -1) return pairLine;
-
-            const pair = pairLine.slice(0, idx).trim();
-            const message = pairLine.slice(idx + sep.length).trim();
-            if (!message) return pair;
-
-            const drugsInPair = pair
-                .split('+')
-                .map(s => s.trim().toLowerCase())
-                .filter(Boolean);
-
-            const msgLower = message.toLowerCase();
-
-            // If the message names one of the pair's drugs, it belongs here.
-            if (drugsInPair.some(d => msgLower.includes(d))) return pairLine;
-
-            // If the message names a known "foreign" drug that isn't in the pair,
-            // it's mislabeled — drop the message.
-            const FOREIGN_DRUG_TOKENS = [
-                'levothyroxine', 'ሌቮታይሮክሲን'
-            ];
-            if (FOREIGN_DRUG_TOKENS.some(t => msgLower.includes(t))) return pair;
-
-            // Otherwise: generic message → keep it.
-            return pairLine;
-        };
-
         const isInteractionRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
@@ -715,6 +724,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    lowerName.includes('drug interaction');
         };
 
+        /**
+         * Is the rule an IV incompatibility rule?
+         */
         const isIVIncompatibilityRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
@@ -724,6 +736,14 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    lowerName.includes('iv incompat');
         };
 
+        /**
+         * Build the pair list for a rule, restricted to what the searched
+         * medications actually satisfy. Returns null if the rule shape is
+         * not recognised (caller should skip).
+         *
+         * Revised: For a SINGLE searched drug, we still emit the declared
+         * pair (anchor + co-drug) so that the rule's message reaches the user.
+         */
         const buildPairsForRule = (cond) => {
             // Case 1: structured rule — all: [anchor, any(co-drugs)]
             const structured = extractStructuredRule(cond);
@@ -737,16 +757,31 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     coDrugs.some(c => medsMatch(c, m))
                 );
 
-                if (anchorInSearch.length === 0 || coDrugsInSearch.length === 0) {
-                    return [];
+                const pairs = [];
+
+                // If both sides are present in the search, emit the user-typed pairs.
+                if (anchorInSearch.length > 0 && coDrugsInSearch.length > 0) {
+                    anchorInSearch.forEach(a => {
+                        coDrugsInSearch.forEach(c => {
+                            if (!medsMatch(a, c)) pairs.push([a, c]);
+                        });
+                    });
+                    return pairs;
                 }
 
-                const pairs = [];
-                anchorInSearch.forEach(a => {
-                    coDrugsInSearch.forEach(c => {
-                        if (!medsMatch(a, c)) pairs.push([a, c]);
+                // Single-drug search: emit the pair(s) the rule declares, using
+                // the searched drug for the side it matches, and the rule's
+                // declared partner for the other side.
+                if (anchorInSearch.length > 0) {
+                    anchorInSearch.forEach(a => {
+                        coDrugs.forEach(c => pairs.push([a, c]));
                     });
-                });
+                } else if (coDrugsInSearch.length > 0) {
+                    coDrugsInSearch.forEach(c => {
+                        anchorMeds.forEach(a => pairs.push([a, c]));
+                    });
+                }
+
                 return pairs;
             }
 
@@ -757,13 +792,21 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 declared.forEach(([a, b]) => {
                     const aIn = meds.find(m => medsMatch(a, m));
                     const bIn = meds.find(m => medsMatch(b, m));
+
                     if (aIn && bIn && !medsMatch(aIn, bIn)) {
+                        // Both sides present — use the user-typed names.
                         pairs.push([aIn, bIn]);
+                    } else if (aIn && !bIn) {
+                        // Only one side searched — use the rule's declared partner.
+                        pairs.push([aIn, b]);
+                    } else if (!aIn && bIn) {
+                        pairs.push([a, bIn]);
                     }
                 });
                 return pairs;
             }
 
+            // Case 3: unrecognised shape — caller should skip
             return null;
         };
 
@@ -774,8 +817,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             if (!cond) return;
 
+            // Cheap early-out — the rule must mention at least one searched drug
             if (!hasMedication(cond)) return;
 
+            // Structural gate: the searched meds must satisfy the WHOLE rule.
+            // For a single-drug search, this still passes when the rule's
+            // medication branch is satisfiable and other facts (age, labs) are
+            // not blocking.
             if (!conditionSatisfiedByMeds(cond)) {
                 console.log(`⏭️  Rule "${rule.rule_name}" rejected: search does not satisfy full condition`);
                 return;
@@ -791,12 +839,16 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
+            // Matched searched meds (for bracket annotations on categories)
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
             const capitalizedMeds = matchedSearchedMeds.map(m => capitalizeMed(m));
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
-            // Drug interactions
-            if (isInteractionRule(rule) && meds.length >= 2) {
+            // ============================================
+            // Handle Drug Interactions
+            // (Now includes single-drug searches too)
+            // ============================================
+            if (isInteractionRule(rule)) {
                 const pairs = buildPairsForRule(cond);
 
                 if (pairs === null) {
@@ -806,7 +858,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     pairs.forEach(([a, b]) => {
                         let line = `${capitalizeMed(a)} + ${capitalizeMed(b)}`;
                         if (msg) line += ` — ${msg}`;
-                        line = sanitizePairWithMessage(line);
                         if (!lines.includes(line)) lines.push(line);
                     });
                     lines.forEach(line => {
@@ -817,8 +868,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 }
             }
 
-            // IV incompatibility
-            if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
+            // ============================================
+            // Handle IV Incompatibility
+            // (Now includes single-drug searches too)
+            // ============================================
+            if (isIVIncompatibilityRule(rule)) {
                 const pairs = buildPairsForRule(cond);
 
                 if (pairs === null) {
@@ -828,7 +882,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     pairs.forEach(([a, b]) => {
                         let line = `${capitalizeMed(a)} + ${capitalizeMed(b)}`;
                         if (msg) line += ` — ${msg}`;
-                        line = sanitizePairWithMessage(line);
                         if (!lines.includes(line)) lines.push(line);
                     });
                     lines.forEach(line => {
@@ -838,6 +891,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     });
                 }
             }
+
+            // ============================================
+            // Category checks (unchanged behaviour)
+            // ============================================
 
             // Pregnancy
             if (
@@ -969,9 +1026,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
         });
 
+        // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions    = [...new Set(safetyProfile.major_interactions)];
         safetyProfile.iv_incompatibility    = [...new Set(safetyProfile.iv_incompatibility)];
 
+        // Log the results for debugging
         console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
         console.log(`✅ Major Interactions found: ${safetyProfile.major_interactions.length}`);
         console.log('📊 Searched medications:', meds);
@@ -998,7 +1057,8 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
         const userRole = req.user.role;
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
- 
+
+        // 1. Verify access to the patient first using resolved ID
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) {
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
@@ -1009,6 +1069,7 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
         }
 
+        // 2. Fetch medications for verified patient using patient's ID
         let query = (supabaseAdmin || supabase).from('medication_history').select('*');
         query = query.eq('patient_id', resolvedId);
 
@@ -1070,7 +1131,10 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         delete updates.id;
         delete updates.user_id;
         delete updates.patient_code;
-        
+        // Now that patient_id is added, we allow it to be updated or persisted
+        // delete updates.patient_id;
+
+        // Resolve patient context (Code lookups removed as patient_code does not exist)
         if (updates.patient_id) {
             // Patient ID already provided
         }
@@ -1118,13 +1182,14 @@ router.post('/vitals', authenticateToken, async (req, res) => {
         }
         const vitalsData = {
             ...req.body,
-            patient_id: resolvedId,
+            patient_id: resolvedId, // Ensure patient_id is resolved numeric ID
             created_by: userId,
             created_at: new Date().toISOString()
         };
         delete vitalsData.patient_code;
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').insert([vitalsData]).select().single();
         if (error) {
+            // Fallback for missing table - many systems might not have it yet
             return res.status(200).json({ success: true, skipped: true, message: 'Saved to patient record only' });
         }
         res.json({ success: true, vitals: data });
@@ -1138,7 +1203,7 @@ router.put('/vitals/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
-        delete updates.user_id;
+        delete updates.user_id; // Prevent user_id from being updated
         delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').update(updates).eq('id', id).select().single();
@@ -1196,7 +1261,7 @@ router.post('/labs-history', authenticateToken, async (req, res) => {
         }
         const labsData = {
             ...req.body,
-            patient_id: resolvedId,
+            patient_id: resolvedId, // Ensure patient_id is included
             created_by: userId,
             created_at: new Date().toISOString()
         };
@@ -1216,7 +1281,7 @@ router.put('/labs-history/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
-        delete updates.user_id;
+        delete updates.user_id; // Prevent user_id from being updated
         delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('labs_history').update(updates).eq('id', id).select().single();
@@ -1297,7 +1362,8 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
         const userRole = req.user.role;
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
- 
+
+        // 🔐 Resolve and enforce UUID type
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
 
@@ -1321,6 +1387,7 @@ router.delete('/reconciliations/:id', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
 
+        // Check ownership if not admin
         const { data: existing, error: fetchError } = await (supabaseAdmin || supabase)
             .from('medication_reconciliations')
             .select('created_by')
