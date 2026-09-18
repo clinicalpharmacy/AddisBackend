@@ -14,16 +14,11 @@ async function resolvePatientId(identifier) {
     const db = supabaseAdmin || supabase;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
 
-    // prioritze checking if it's already a valid primary ID (UUID or numeric)
     if (isUUID) return identifier;
 
-    // 1. Try to resolve as a direct numeric ID or UUID
     const isNumeric = /^\d+$/.test(identifier);
     if (isNumeric) return identifier;
 
-    // (Lookup logic for MR number would go here if it used a different column name)
-
-    // 2. FALLBACK: If it's numeric, it might be a legacy numeric ID
     if (/^\d+$/.test(identifier)) return identifier;
 
     return null;
@@ -31,7 +26,6 @@ async function resolvePatientId(identifier) {
 
 /**
  * 🛡️ Robust Clinical Access Check
- * Verifies if a user has permission to see a specific patient's clinical data.
  */
 async function verifyClinicalAccess(patientId, req) {
     const userId = req.user.userId;
@@ -43,24 +37,19 @@ async function verifyClinicalAccess(patientId, req) {
 
     const db = supabaseAdmin || supabase;
 
-    // Safety: If patientId is not a UUID and not numeric, it's definitely invalid for the 'id' column
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
     const isNumeric = /^\d+$/.test(patientId);
     if (!isUUID && !isNumeric) return false;
 
     try {
-        // Resolve Patient Owner
         const { data: patient, error: patientError } = await db.from('patients').select('id, user_id').eq('id', patientId).maybeSingle();
         if (patientError || !patient) return false;
 
-        // 1. Simple Ownership
         if (patient.user_id === userId) return true;
 
-        // 2. Company Access
         const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
         if (accessibleUserIds && accessibleUserIds.includes(patient.user_id)) return true;
 
-        // 3. Approved Access Request
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const { data: access } = await db.from('access_requests')
             .select('id')
@@ -102,7 +91,6 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
 
         const hasAccess = await verifyClinicalAccess(resolvedId, req);
 
-        // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
         if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && !req.authorizedSupport)) {
             if (userAccountType === 'individual' && userRole !== 'admin' && !hasAccess) {
                 return res.status(403).json({ success: false, error: 'DRN assessment is not available for individual subscribers' });
@@ -506,12 +494,11 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
  *
  * Interaction & IV-incompatibility behaviour (revised):
- *  - For BOTH single-drug and multi-drug searches, all declared pairs are
- *    listed when the searched medications match the rule.
- *  - The pair is always emitted exactly as the rule declares it (anchor +
- *    co-drug, or pairwise a + b). If the user typed both sides, the user's
- *    names are used; if the user typed only one side, the rule's declared
- *    partner name is used so the full pair is visible.
+ *  - ONLY pairs where BOTH sides are present in the user's search are emitted.
+ *    This is the "combination check" behaviour — the endpoint reports the
+ *    interactions that actually exist between the drugs the user entered.
+ *  - A rule whose declared pair has only one side in the search is skipped
+ *    (no fabricated partner is emitted).
  *  - Category messages (pregnancy, lactation, etc.) keep the existing
  *    `[<searched meds>] <message>` format.
  */
@@ -519,12 +506,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
         const { medication, medications: medList } = req.body;
 
-        // Support either a single medication string or an array of medications
         let meds = [];
         if (medList && Array.isArray(medList) && medList.length > 0) {
             meds = medList.map(m => m.toLowerCase().trim());
         } else if (medication) {
-            // Split by comma if user typed multiple in one string, just in case
             meds = medication.split(',').map(m => m.toLowerCase().trim()).filter(Boolean);
         }
 
@@ -540,7 +525,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
-        // Base safety profile structure
         const safetyProfile = {
             medication: meds.join(', '),
             general_overview: `Safety profile derived from clinical rules database for ${meds.join(', ')}.`,
@@ -558,10 +542,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         // ── Helpers ──────────────────────────────────────────────────────
 
-        /**
-         * Recursively collect ALL leaf facts from a nested condition tree.
-         * Handles: { all: [...] }, { any: [...] }, and plain { fact, value, operator }
-         */
         const collectFacts = (node) => {
             if (!node) return [];
             const results = [];
@@ -571,42 +551,29 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
-        /**
-         * Check if two medication names match (substring match either way).
-         */
         const medsMatch = (med1, med2) => {
             const m1 = String(med1).toLowerCase().trim();
             const m2 = String(med2).toLowerCase().trim();
             return m1.includes(m2) || m2.includes(m1);
         };
 
-        /**
-         * Capitalize the first letter of a medication name.
-         */
         const capitalizeMed = (name) => {
             if (!name) return '';
             return name.charAt(0).toUpperCase() + name.slice(1);
         };
 
-        /**
-         * Does the searched `meds` array contain this medication value?
-         */
         const searchContainsMed = (ruleValue) => {
             const rv = String(ruleValue).toLowerCase().trim();
             return meds.some(m => medsMatch(rv, m));
         };
 
-        /**
-         * Evaluate whether the searched `meds` list satisfies a rule condition
-         * tree, honouring `all` / `any` structure.
-         */
         const conditionSatisfiedByMeds = (node) => {
             if (!node) return false;
 
             if (node.fact === 'medications' && node.value) {
                 return searchContainsMed(node.value);
             }
-            if (node.fact) return true;   // non-medication fact: not blocking
+            if (node.fact) return true;
 
             if (Array.isArray(node.all)) {
                 return node.all.every(conditionSatisfiedByMeds);
@@ -617,17 +584,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return false;
         };
 
-        /**
-         * Do any of the searched drugs match any drug mentioned in the condition?
-         */
         const hasMedication = (condition) => {
             const facts = collectFacts(condition);
             return facts.some(f => f.fact === 'medications' && f.value && searchContainsMed(f.value));
         };
 
-        /**
-         * Get ONLY the searched medications that match the condition.
-         */
         const getMatchingSearchedMeds = (condition) => {
             const facts = collectFacts(condition);
             const matchedMeds = [];
@@ -645,8 +606,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         /**
          * Extract the anchor branch and any-branch from a standard
-         * { all: [anchor, any(...)] } shape. Returns null if the shape
-         * doesn't match.
+         * { all: [anchor, any(...)] } shape.
          */
         const extractStructuredRule = (cond) => {
             if (!cond || !Array.isArray(cond.all) || cond.all.length !== 2) return null;
@@ -663,10 +623,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return { anchorMeds, coDrugs };
         };
 
-        /**
-         * Is the rule a plain pairwise rule whose top level is
-         * { any: [ {all:[a,b]}, {all:[c,d]}, ... ] } or { all: [a,b] }?
-         */
         const isPairwiseRule = (cond) => {
             if (!cond) return false;
             if (Array.isArray(cond.any)) {
@@ -678,9 +634,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return false;
         };
 
-        /**
-         * Return the pairs a pairwise rule declares as [[a,b],[c,d],...]
-         */
         const extractPairwisePairs = (cond) => {
             const pairs = [];
             const pushPairFromBlock = (block) => {
@@ -698,9 +651,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return pairs;
         };
 
-        /**
-         * Is the rule an interaction rule?
-         */
         const isInteractionRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
@@ -709,9 +659,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    lowerName.includes('drug interaction');
         };
 
-        /**
-         * Is the rule an IV incompatibility rule?
-         */
         const isIVIncompatibilityRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
@@ -722,12 +669,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Build the pair list for a rule, restricted to what the searched
-         * medications actually satisfy. Returns null if the rule shape is
-         * not recognised (caller should skip).
+         * Build the pair list for a rule — subset-only.
          *
-         * Revised: For a SINGLE searched drug, we still emit the declared
-         * pair (anchor + co-drug) so that the rule's message reaches the user.
+         * Emits a pair ONLY when BOTH sides of the rule's declared pair are
+         * present in the user's `meds` search. If only one side was searched,
+         * the rule contributes nothing (no fabricated partner is emitted).
+         *
+         * Returns null if the rule shape is unrecognised.
          */
         const buildPairsForRule = (cond) => {
             // Case 1: structured rule — all: [anchor, any(co-drugs)]
@@ -742,31 +690,17 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     coDrugs.some(c => medsMatch(c, m))
                 );
 
+                // Subset-only: both sides must be present in the search.
+                if (anchorInSearch.length === 0 || coDrugsInSearch.length === 0) {
+                    return [];
+                }
+
                 const pairs = [];
-
-                // If both sides are present in the search, emit the user-typed pairs.
-                if (anchorInSearch.length > 0 && coDrugsInSearch.length > 0) {
-                    anchorInSearch.forEach(a => {
-                        coDrugsInSearch.forEach(c => {
-                            if (!medsMatch(a, c)) pairs.push([a, c]);
-                        });
-                    });
-                    return pairs;
-                }
-
-                // Single-drug search: emit the pair(s) the rule declares, using
-                // the searched drug for the side it matches, and the rule's
-                // declared partner for the other side.
-                if (anchorInSearch.length > 0) {
-                    anchorInSearch.forEach(a => {
-                        coDrugs.forEach(c => pairs.push([a, c]));
-                    });
-                } else if (coDrugsInSearch.length > 0) {
+                anchorInSearch.forEach(a => {
                     coDrugsInSearch.forEach(c => {
-                        anchorMeds.forEach(a => pairs.push([a, c]));
+                        if (!medsMatch(a, c)) pairs.push([a, c]);
                     });
-                }
-
+                });
                 return pairs;
             }
 
@@ -778,14 +712,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                     const aIn = meds.find(m => medsMatch(a, m));
                     const bIn = meds.find(m => medsMatch(b, m));
 
+                    // Subset-only: both sides must be present in the search.
                     if (aIn && bIn && !medsMatch(aIn, bIn)) {
-                        // Both sides present — use the user-typed names.
                         pairs.push([aIn, bIn]);
-                    } else if (aIn && !bIn) {
-                        // Only one side searched — use the rule's declared partner.
-                        pairs.push([aIn, b]);
-                    } else if (!aIn && bIn) {
-                        pairs.push([a, bIn]);
                     }
                 });
                 return pairs;
@@ -802,10 +731,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             if (!cond) return;
 
-            // Cheap early-out — the rule must mention at least one searched drug
             if (!hasMedication(cond)) return;
 
-            // Structural gate: the searched meds must satisfy the WHOLE rule.
             if (!conditionSatisfiedByMeds(cond)) {
                 console.log(`⏭️  Rule "${rule.rule_name}" rejected: search does not satisfy full condition`);
                 return;
@@ -821,20 +748,18 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
-            // Matched searched meds (for bracket annotations on categories)
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
             const capitalizedMeds = matchedSearchedMeds.map(m => capitalizeMed(m));
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
             // ============================================
-            // Handle Drug Interactions
-            // (Now includes single-drug searches too)
+            // Handle Drug Interactions — subset-only
             // ============================================
             if (isInteractionRule(rule)) {
                 const pairs = buildPairsForRule(cond);
 
                 if (pairs === null) {
-                    console.log(`⚠️ Rule "${rule.rule_name}" has unrecognised interaction shape; skipping to avoid fabricating pairs`);
+                    console.log(`⚠️ Rule "${rule.rule_name}" has unrecognised interaction shape; skipping`);
                 } else {
                     const lines = [];
                     pairs.forEach(([a, b]) => {
@@ -851,8 +776,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
 
             // ============================================
-            // Handle IV Incompatibility
-            // (Now includes single-drug searches too)
+            // Handle IV Incompatibility — subset-only
             // ============================================
             if (isIVIncompatibilityRule(rule)) {
                 const pairs = buildPairsForRule(cond);
@@ -1008,7 +932,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             }
         });
 
-        // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
         safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
 
