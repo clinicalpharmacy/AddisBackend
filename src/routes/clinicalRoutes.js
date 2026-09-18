@@ -516,19 +516,12 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
 /**
  * Quick Safety Check (Database-driven instead of AI)
  *
- * Supports nested rule_condition structures like:
- *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
- *
- * Message behaviour (revised):
- *  - Interaction / IV-incompatibility messages are ALWAYS shown when the rule
- *    declares them, for both single-drug and multi-drug searches.
- *  - For structured rules (`all: [anchor, any(co-drugs)]`), the emitted pair
- *    is always `<anchor> + <co-drug>` — the pair the rule actually declares —
- *    with the rule's message appended.
- *  - For pairwise rules, only the declared pairs are emitted, each with the
- *    rule's message appended.
- *  - Category messages (pregnancy, lactation, etc.) keep their existing
- *    `[<searched meds>] <message>` format.
+ * Uniform interaction handling:
+ *  - Collect ALL medication facts from the rule condition tree.
+ *  - Find which of the user's searched medications match those facts.
+ *  - Only emit a pair when BOTH sides of that pair are in the searched list.
+ *  - No fabricated pairs, no special-casing of structured vs. pairwise shapes.
+ *  - Works identically for single-drug and multi-drug searches.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -659,61 +652,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Extract the anchor branch and any-branch from a standard
-         * { all: [anchor, any(...)] } shape. Returns null if the shape
-         * doesn't match.
-         */
-        const extractStructuredRule = (cond) => {
-            if (!cond || !Array.isArray(cond.all) || cond.all.length !== 2) return null;
-            const [first, second] = cond.all;
-            const firstIsMed = first && first.fact === 'medications' && first.value;
-            const secondIsAny = second && Array.isArray(second.any);
-            if (!firstIsMed || !secondIsAny) return null;
-
-            const anchorMeds = [String(first.value).toLowerCase().trim()];
-            const coDrugs = second.any
-                .filter(f => f && f.fact === 'medications' && f.value)
-                .map(f => String(f.value).toLowerCase().trim());
-
-            return { anchorMeds, coDrugs };
-        };
-
-        /**
-         * Is the rule a plain pairwise rule whose top level is
-         * { any: [ {all:[a,b]}, {all:[c,d]}, ... ] } or { all: [a,b] }?
-         */
-        const isPairwiseRule = (cond) => {
-            if (!cond) return false;
-            if (Array.isArray(cond.any)) {
-                return cond.any.every(b => b && Array.isArray(b.all) && b.all.length === 2);
-            }
-            if (Array.isArray(cond.all) && cond.all.length === 2) {
-                return cond.all.every(f => f && f.fact === 'medications');
-            }
-            return false;
-        };
-
-        /**
-         * Return the pairs a pairwise rule declares as [[a,b],[c,d],...]
-         */
-        const extractPairwisePairs = (cond) => {
-            const pairs = [];
-            const pushPairFromBlock = (block) => {
-                if (!block || !Array.isArray(block.all)) return;
-                const blockMeds = block.all
-                    .filter(f => f && f.fact === 'medications' && f.value)
-                    .map(f => String(f.value).toLowerCase().trim());
-                if (blockMeds.length === 2) pairs.push(blockMeds);
-            };
-            if (Array.isArray(cond.any)) {
-                cond.any.forEach(pushPairFromBlock);
-            } else if (Array.isArray(cond.all)) {
-                pushPairFromBlock(cond);
-            }
-            return pairs;
-        };
-
-        /**
          * Is the rule an interaction rule?
          */
         const isInteractionRule = (rule) => {
@@ -737,77 +675,36 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Build the pair list for a rule, restricted to what the searched
-         * medications actually satisfy. Returns null if the rule shape is
-         * not recognised (caller should skip).
+         * UNIFORM pair builder — no special-casing of shapes.
          *
-         * Revised: For a SINGLE searched drug, we still emit the declared
-         * pair (anchor + co-drug) so that the rule's message reaches the user.
+         * 1. Collect every medication value declared anywhere in the rule.
+         * 2. Determine which of the user's searched meds match those values.
+         * 3. Emit every unique combination of two DIFFERENT matched searched meds.
+         *
+         * A pair is only emitted when BOTH sides are in the searched list,
+         * which prevents fabricating interactions the user never asked about.
          */
         const buildPairsForRule = (cond) => {
-            // Case 1: structured rule — all: [anchor, any(co-drugs)]
-            const structured = extractStructuredRule(cond);
-            if (structured) {
-                const { anchorMeds, coDrugs } = structured;
+            const facts = collectFacts(cond);
+            const ruleMeds = facts
+                .filter(f => f && f.fact === 'medications' && f.value)
+                .map(f => String(f.value).toLowerCase().trim());
 
-                const anchorInSearch = meds.filter(m =>
-                    anchorMeds.some(a => medsMatch(a, m))
-                );
-                const coDrugsInSearch = meds.filter(m =>
-                    coDrugs.some(c => medsMatch(c, m))
-                );
+            // All searched meds that match at least one declared rule med
+            const matchedSearched = meds.filter(searchMed =>
+                ruleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
+            );
 
-                const pairs = [];
-
-                // If both sides are present in the search, emit the user-typed pairs.
-                if (anchorInSearch.length > 0 && coDrugsInSearch.length > 0) {
-                    anchorInSearch.forEach(a => {
-                        coDrugsInSearch.forEach(c => {
-                            if (!medsMatch(a, c)) pairs.push([a, c]);
-                        });
-                    });
-                    return pairs;
+            // Need at least two distinct matched searched meds to form a pair
+            const pairs = [];
+            for (let i = 0; i < matchedSearched.length; i++) {
+                for (let j = i + 1; j < matchedSearched.length; j++) {
+                    const a = matchedSearched[i];
+                    const b = matchedSearched[j];
+                    if (!medsMatch(a, b)) pairs.push([a, b]);
                 }
-
-                // Single-drug search: emit the pair(s) the rule declares, using
-                // the searched drug for the side it matches, and the rule's
-                // declared partner for the other side.
-                if (anchorInSearch.length > 0) {
-                    anchorInSearch.forEach(a => {
-                        coDrugs.forEach(c => pairs.push([a, c]));
-                    });
-                } else if (coDrugsInSearch.length > 0) {
-                    coDrugsInSearch.forEach(c => {
-                        anchorMeds.forEach(a => pairs.push([a, c]));
-                    });
-                }
-
-                return pairs;
             }
-
-            // Case 2: pairwise rule — any of the declared pairs
-            if (isPairwiseRule(cond)) {
-                const declared = extractPairwisePairs(cond);
-                const pairs = [];
-                declared.forEach(([a, b]) => {
-                    const aIn = meds.find(m => medsMatch(a, m));
-                    const bIn = meds.find(m => medsMatch(b, m));
-
-                    if (aIn && bIn && !medsMatch(aIn, bIn)) {
-                        // Both sides present — use the user-typed names.
-                        pairs.push([aIn, bIn]);
-                    } else if (aIn && !bIn) {
-                        // Only one side searched — use the rule's declared partner.
-                        pairs.push([aIn, b]);
-                    } else if (!aIn && bIn) {
-                        pairs.push([a, bIn]);
-                    }
-                });
-                return pairs;
-            }
-
-            // Case 3: unrecognised shape — caller should skip
-            return null;
+            return pairs;
         };
 
         // ── Main loop ─────────────────────────────────────────────────────
@@ -821,9 +718,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (!hasMedication(cond)) return;
 
             // Structural gate: the searched meds must satisfy the WHOLE rule.
-            // For a single-drug search, this still passes when the rule's
-            // medication branch is satisfiable and other facts (age, labs) are
-            // not blocking.
             if (!conditionSatisfiedByMeds(cond)) {
                 console.log(`⏭️  Rule "${rule.rule_name}" rejected: search does not satisfy full condition`);
                 return;
@@ -846,13 +740,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // ============================================
             // Handle Drug Interactions
-            // (Now includes single-drug searches too)
             // ============================================
             if (isInteractionRule(rule)) {
                 const pairs = buildPairsForRule(cond);
 
-                if (pairs === null) {
-                    console.log(`⚠️ Rule "${rule.rule_name}" has unrecognised interaction shape; skipping to avoid fabricating pairs`);
+                if (pairs.length === 0) {
+                    console.log(`⏭️  Interaction rule "${rule.rule_name}": no complete pair in search; skipping`);
                 } else {
                     const lines = [];
                     pairs.forEach(([a, b]) => {
@@ -870,13 +763,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // ============================================
             // Handle IV Incompatibility
-            // (Now includes single-drug searches too)
             // ============================================
             if (isIVIncompatibilityRule(rule)) {
                 const pairs = buildPairsForRule(cond);
 
-                if (pairs === null) {
-                    console.log(`⚠️ IV rule "${rule.rule_name}" has unrecognised shape; skipping`);
+                if (pairs.length === 0) {
+                    console.log(`⏭️  IV rule "${rule.rule_name}": no complete pair in search; skipping`);
                 } else {
                     const lines = [];
                     pairs.forEach(([a, b]) => {
