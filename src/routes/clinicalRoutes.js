@@ -104,8 +104,6 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
 
         // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
         if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && !req.authorizedSupport)) {
-            // Note: verifyClinicalAccess will handle the base ownership/company/support check.
-            // We only block individuals here if they aren't authorized or it's a general restriction.
             if (userAccountType === 'individual' && userRole !== 'admin' && !hasAccess) {
                 return res.status(403).json({ success: false, error: 'DRN assessment is not available for individual subscribers' });
             }
@@ -150,7 +148,6 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
             return res.json({ success: true, assessments: [] });
         }
 
-        // Restriction for individuals - still block if they don't have clinical access (though verify already checked)
         if (userAccountType === 'individual' && userRole !== 'admin' && !(await verifyClinicalAccess(resolvedId, req))) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
@@ -171,7 +168,6 @@ router.put('/assessments/drn/:id', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access DRN
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
@@ -202,7 +198,6 @@ router.delete('/assessments/drn/:id', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access DRN
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
@@ -221,7 +216,6 @@ router.post('/plans/pharmacy-assistance', authenticateToken, async (req, res) =>
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access PharmAssist Plans
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
@@ -249,7 +243,6 @@ router.get('/plans/patient/:patientCode', authenticateToken, async (req, res) =>
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access PharmAssist Plans
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
@@ -297,7 +290,6 @@ router.post('/outcomes', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access Outcomes
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
@@ -324,7 +316,6 @@ router.get('/outcomes/patient/:patientCode', authenticateToken, async (req, res)
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access Outcomes
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
@@ -386,11 +377,9 @@ router.post('/costs', authenticateToken, async (req, res) => {
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access Cost Analysis
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
-        // UUID format check
         const isUUID = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 
         const resolvedId = await resolvePatientId(req.body.patient_id);
@@ -447,19 +436,16 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
         const userAccountType = req.user.account_type;
         const userRole = req.user.role;
 
-        // Restriction: Individual subscribers cannot access Cost Analysis
         if (userAccountType === 'individual' && userRole !== 'admin') {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
 
-        // 🔐 Resolve identifier and enforce UUID for this clinical table
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
 
         if (!resolvedId || !isUUID) {
-            // Return empty if not found or not a UUID (numeric legacy IDs are incompatible with this clinical table)
             return res.json({ success: true, costs: [] });
         }
 
@@ -519,15 +505,14 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * Supports nested rule_condition structures like:
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
  *
- * Message behaviour (revised):
- *  - Interaction / IV-incompatibility messages are ALWAYS shown when the rule
- *    declares them, for both single-drug and multi-drug searches.
- *  - For structured rules (`all: [anchor, any(co-drugs)]`), the emitted pair
- *    is always `<anchor> + <co-drug>` — the pair the rule actually declares —
- *    with the rule's message appended.
- *  - For pairwise rules, only the declared pairs are emitted, each with the
- *    rule's message appended.
- *  - Category messages (pregnancy, lactation, etc.) keep their existing
+ * Interaction & IV-incompatibility behaviour (revised):
+ *  - For BOTH single-drug and multi-drug searches, all declared pairs are
+ *    listed when the searched medications match the rule.
+ *  - The pair is always emitted exactly as the rule declares it (anchor +
+ *    co-drug, or pairwise a + b). If the user typed both sides, the user's
+ *    names are used; if the user typed only one side, the rule's declared
+ *    partner name is used so the full pair is visible.
+ *  - Category messages (pregnancy, lactation, etc.) keep the existing
  *    `[<searched meds>] <message>` format.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
@@ -821,9 +806,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (!hasMedication(cond)) return;
 
             // Structural gate: the searched meds must satisfy the WHOLE rule.
-            // For a single-drug search, this still passes when the rule's
-            // medication branch is satisfiable and other facts (age, labs) are
-            // not blocking.
             if (!conditionSatisfiedByMeds(cond)) {
                 console.log(`⏭️  Rule "${rule.rule_name}" rejected: search does not satisfy full condition`);
                 return;
@@ -1027,10 +1009,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         });
 
         // Remove duplicates from interactions and incompatibilities
-        safetyProfile.major_interactions    = [...new Set(safetyProfile.major_interactions)];
-        safetyProfile.iv_incompatibility    = [...new Set(safetyProfile.iv_incompatibility)];
+        safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
+        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
 
-        // Log the results for debugging
         console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
         console.log(`✅ Major Interactions found: ${safetyProfile.major_interactions.length}`);
         console.log('📊 Searched medications:', meds);
@@ -1058,7 +1039,6 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
 
-        // 1. Verify access to the patient first using resolved ID
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) {
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
@@ -1069,7 +1049,6 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
             return res.status(403).json({ success: false, error: 'Access denied to this patient record' });
         }
 
-        // 2. Fetch medications for verified patient using patient's ID
         let query = (supabaseAdmin || supabase).from('medication_history').select('*');
         query = query.eq('patient_id', resolvedId);
 
@@ -1131,13 +1110,6 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         delete updates.id;
         delete updates.user_id;
         delete updates.patient_code;
-        // Now that patient_id is added, we allow it to be updated or persisted
-        // delete updates.patient_id;
-
-        // Resolve patient context (Code lookups removed as patient_code does not exist)
-        if (updates.patient_id) {
-            // Patient ID already provided
-        }
 
         const { data, error } = await (supabaseAdmin || supabase).from('medication_history').update(updates).eq('id', id).select().single();
         if (error) throw error;
@@ -1182,14 +1154,13 @@ router.post('/vitals', authenticateToken, async (req, res) => {
         }
         const vitalsData = {
             ...req.body,
-            patient_id: resolvedId, // Ensure patient_id is resolved numeric ID
+            patient_id: resolvedId,
             created_by: userId,
             created_at: new Date().toISOString()
         };
         delete vitalsData.patient_code;
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').insert([vitalsData]).select().single();
         if (error) {
-            // Fallback for missing table - many systems might not have it yet
             return res.status(200).json({ success: true, skipped: true, message: 'Saved to patient record only' });
         }
         res.json({ success: true, vitals: data });
@@ -1203,7 +1174,7 @@ router.put('/vitals/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
-        delete updates.user_id; // Prevent user_id from being updated
+        delete updates.user_id;
         delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('vitals_history').update(updates).eq('id', id).select().single();
@@ -1261,7 +1232,7 @@ router.post('/labs-history', authenticateToken, async (req, res) => {
         }
         const labsData = {
             ...req.body,
-            patient_id: resolvedId, // Ensure patient_id is included
+            patient_id: resolvedId,
             created_by: userId,
             created_at: new Date().toISOString()
         };
@@ -1281,7 +1252,7 @@ router.put('/labs-history/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         delete updates.id;
-        delete updates.user_id; // Prevent user_id from being updated
+        delete updates.user_id;
         delete updates.patient_code;
 
         const { data, error } = await (supabaseAdmin || supabase).from('labs_history').update(updates).eq('id', id).select().single();
@@ -1363,7 +1334,6 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
 
-        // 🔐 Resolve and enforce UUID type
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
 
@@ -1387,7 +1357,6 @@ router.delete('/reconciliations/:id', authenticateToken, async (req, res) => {
         const userId = req.user.userId;
         const userRole = req.user.role;
 
-        // Check ownership if not admin
         const { data: existing, error: fetchError } = await (supabaseAdmin || supabase)
             .from('medication_reconciliations')
             .select('created_by')
