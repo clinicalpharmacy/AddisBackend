@@ -522,6 +522,10 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * ENHANCED: Now properly captures interactions and IV incompatibilities for:
  * - Single drug searches (shows all interactions involving that drug)
  * - Multi-drug searches (shows ONLY interactions involving the searched drugs)
+ * 
+ * FIXED: Drug interactions now display the EXACT drug combination from the rule
+ *        instead of generating all possible pairs. This correctly represents
+ *        triple-drug interactions like "Triple Whammy" as a single entry.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -530,7 +534,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // Support either a single medication string or an array of medications
         let meds = [];
         if (medList && Array.isArray(medList) && medList.length > 0) {
-            meds = medList.map(m => m.toLowerCase().trim());
+            meds = medList.map(m => m.toLowerCase().trim()).filter(Boolean);
         } else if (medication) {
             // Split by comma if user typed multiple in one string, just in case
             meds = medication.split(',').map(m => m.toLowerCase().trim()).filter(Boolean);
@@ -579,30 +583,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 node.any.forEach(child => results.push(...collectFacts(child)));
             }
             return results;
-        };
-
-        // Helper to get all medication names from a condition block
-        const getAllMedicationsInBlock = (block) => {
-            const facts = collectFacts(block);
-            const meds = [];
-            facts.forEach(f => {
-                if (f.fact === 'medications' && f.value) {
-                    const val = String(f.value);
-                    if (!meds.includes(val)) {
-                        meds.push(val);
-                    }
-                }
-            });
-            return meds;
-        };
-
-        // Helper to check if a condition targets ANY of the provided medications
-        const hasMedication = (condition) => {
-            const facts = collectFacts(condition);
-            return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
-                const ruleVal = String(f.value).toLowerCase();
-                return ruleVal.includes(m) || m.includes(ruleVal);
-            }));
         };
 
         // Helper: get all medications from a condition
@@ -677,7 +657,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const lowerType = String(rule.rule_type).toLowerCase();
             return lowerType.includes('drug_interaction') || 
                    lowerName.includes('interaction') ||
-                   lowerName.includes('drug interaction');
+                   lowerName.includes('drug interaction') ||
+                   lowerName.includes('triple whammy');
         };
 
         // Helper: Check if a rule is an IV incompatibility rule
@@ -690,6 +671,36 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    lowerName.includes('iv incompat');
         };
 
+        // ============================================================
+        // FIXED: Build the exact drug combination string from a rule.
+        // Returns the combo of ONLY the searched medications that are
+        // present in the rule, preserving the rule's own order.
+        // ============================================================
+        const buildRuleCombination = (condition) => {
+            const ruleMeds = getMedicationsFromCondition(condition);
+            if (ruleMeds.length < 2) return null;
+
+            // Walk through the rule's medications in order, keeping only
+            // those that match a searched medication. This preserves the
+            // rule's intended combination (e.g., Losartan + Furosemide + Diclofenac
+            // for "Triple Whammy") rather than generating pairs.
+            const matched = [];
+            ruleMeds.forEach(ruleMed => {
+                const hit = meds.find(searchMed =>
+                    ruleMed.includes(searchMed) || searchMed.includes(ruleMed)
+                );
+                if (hit && !matched.includes(hit)) {
+                    matched.push(hit);
+                }
+            });
+
+            // Need at least 2 matched drugs to form an interaction
+            if (matched.length < 2) return null;
+
+            // Sort by original rule order so the display is deterministic
+            return matched;
+        };
+
         // Parse each rule
         rules.forEach(rule => {
             const cond = rule.rule_condition;
@@ -698,10 +709,16 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (!cond) return;
             
             // Check if the rule contains any of the searched medications
-            const hasAnyMed = hasMedication(cond);
+            const allFacts = collectFacts(cond);
+            const hasAnyMed = allFacts.some(f =>
+                f.fact === 'medications' && f.value &&
+                meds.some(m => {
+                    const ruleVal = String(f.value).toLowerCase();
+                    return ruleVal.includes(m) || m.includes(ruleVal);
+                })
+            );
             if (!hasAnyMed) return;
 
-            const allFacts = collectFacts(cond);
             const severity = rule.severity;
             const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
             const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
@@ -720,101 +737,45 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // ============================================
             // Handle Drug Interactions - ONLY for multiple drugs
+            // FIXED: Show the EXACT combination from the rule as one entry
+            //        (supports 2-drug and 3+ drug interactions like Triple Whammy)
             // ============================================
             if (isInteractionRule(rule) && meds.length >= 2) {
-                // Get all medication facts from the condition
-                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-                
-                if (medFacts.length === 0) return;
-                
-                // Get all medications from the rule
-                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
-                
-                // Find which searched medications are in this rule
-                const matchedSearchedMedsForInteraction = meds.filter(searchMed => 
-                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-                
-                // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMedsForInteraction.length >= 2;
-                
-                if (shouldShow) {
-                    // Create pairs of searched drugs that are both in the rule
-                    const interactions = [];
-                    for (let i = 0; i < matchedSearchedMedsForInteraction.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMedsForInteraction.length; j++) {
-                            const med1 = matchedSearchedMedsForInteraction[i];
-                            const med2 = matchedSearchedMedsForInteraction[j];
-                            // Check if both are in the rule
-                            const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                            const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                            if (med1InRule && med2InRule) {
-                                interactions.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                            }
-                        }
-                    }
-                    
-                    // Remove duplicates and add to safety profile
-                    const uniqueInteractions = [...new Set(interactions)];
-                    uniqueInteractions.forEach(interaction => {
-                        let interactionText = interaction;
-                        if (msg) {
-                            interactionText += ` — ${msg}`;
-                        }
-                        if (!safetyProfile.major_interactions.includes(interactionText)) {
-                            safetyProfile.major_interactions.push(interactionText);
-                        }
-                    });
+                const combo = buildRuleCombination(cond);
+                if (!combo) return;
+
+                // Build the interaction label: "Drug A + Drug B + Drug C"
+                const comboLabel = combo.map(capitalizeMed).join(' + ');
+
+                // Compose the full text: "Drug A + Drug B — <message>"
+                let interactionText = comboLabel;
+                if (msg) {
+                    interactionText += ` — ${msg}`;
+                }
+
+                // Deduplicate by full text so the same rule isn't added twice
+                if (!safetyProfile.major_interactions.includes(interactionText)) {
+                    safetyProfile.major_interactions.push(interactionText);
                 }
             }
 
             // ============================================
             // Handle IV Incompatibility - ONLY for multiple drugs
+            // FIXED: Show the EXACT combination from the rule as one entry
             // ============================================
             if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
-                // Get all medication facts from the condition
-                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-                
-                if (medFacts.length === 0) return;
-                
-                // Get all medications from the rule
-                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
-                
-                // Find which searched medications are in this rule
-                const matchedSearchedMedsForIncompat = meds.filter(searchMed => 
-                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-                
-                // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMedsForIncompat.length >= 2;
-                
-                if (shouldShow) {
-                    // Create pairs of searched drugs that are both in the rule
-                    const incompatibilities = [];
-                    for (let i = 0; i < matchedSearchedMedsForIncompat.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMedsForIncompat.length; j++) {
-                            const med1 = matchedSearchedMedsForIncompat[i];
-                            const med2 = matchedSearchedMedsForIncompat[j];
-                            // Check if both are in the rule
-                            const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                            const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                            if (med1InRule && med2InRule) {
-                                incompatibilities.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                            }
-                        }
-                    }
-                    
-                    // Remove duplicates and add to safety profile
-                    const uniqueIncompatibilities = [...new Set(incompatibilities)];
-                    uniqueIncompatibilities.forEach(incompat => {
-                        let incompatText = incompat;
-                        if (msg) {
-                            incompatText += ` — ${msg}`;
-                        }
-                        if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                            safetyProfile.iv_incompatibility.push(incompatText);
-                        }
-                    });
+                const combo = buildRuleCombination(cond);
+                if (!combo) return;
+
+                const comboLabel = combo.map(capitalizeMed).join(' + ');
+
+                let incompatText = comboLabel;
+                if (msg) {
+                    incompatText += ` — ${msg}`;
+                }
+
+                if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
+                    safetyProfile.iv_incompatibility.push(incompatText);
                 }
             }
 
