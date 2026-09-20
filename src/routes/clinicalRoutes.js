@@ -518,12 +518,15 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * Quick Safety Check (Database-driven instead of AI)
  * Supports nested rule_condition structures like:
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
- * 
- * FIXED BEHAVIOUR:
- * - Pairwise rules (2 medication groups) emit a PAIR, exactly matching the
- *   clinical pharmacy tool.
- * - Combination rules (3+ medication groups) emit the FULL COMBINATION.
- * - This matches how the clinical pharmacy tool renders both kinds of rules.
+ *
+ * ENHANCED INTERACTION ENGINE:
+ * - A rule that lists N drugs (N >= 2) is treated as a "co-administration"
+ *   rule. Every pair of drugs that BOTH appear in the rule is emitted.
+ * - Works whether the user searched 1 drug, 2 drugs, or many drugs.
+ *   The only filtering that happens is: which of the user's searched drugs
+ *   participate in the rule. Any 2+ participants => emit their pair(s).
+ * - If a rule lists 3+ drugs, all combinations among the searched drugs that
+ *   are present in that rule are emitted (3 drugs → 3 pairs; 4 drugs → 6 pairs).
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -532,13 +535,18 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         // Support either a single medication string or an array of medications
         let meds = [];
         if (medList && Array.isArray(medList) && medList.length > 0) {
-            meds = medList.map(m => m.toLowerCase().trim());
+            meds = medList.map(m => m.toLowerCase().trim()).filter(Boolean);
         } else if (medication) {
             // Split by comma if user typed multiple in one string, just in case
             meds = medication.split(',').map(m => m.toLowerCase().trim()).filter(Boolean);
         }
 
-        if (meds.length === 0) return res.status(400).json({ success: false, error: 'Medication required' });
+        // Dedupe searched meds to avoid self-pair artefacts
+        meds = [...new Set(meds)];
+
+        if (meds.length === 0) {
+            return res.status(400).json({ success: false, error: 'Medication required' });
+        }
 
         const targetDb = supabaseAdmin || supabase;
         const { data: rules, error } = await targetDb
@@ -580,48 +588,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (Array.isArray(node.any)) {
                 node.any.forEach(child => results.push(...collectFacts(child)));
             }
+            if (Array.isArray(node.none)) {
+                node.none.forEach(child => results.push(...collectFacts(child)));
+            }
             return results;
-        };
-
-        /**
-         * Collect the rule's medication "groups" from its condition tree.
-         * Each `any` block (top-level or nested) = one group. A plain medication
-         * fact with no wrapper = its own singleton group. This tells us how many
-         * distinct drugs the rule requires, which lets us emit pairs for pairwise
-         * rules and full combinations for 3+ drug rules — matching the clinical
-         * pharmacy tool's rendering.
-         */
-        const collectMedicationGroups = (node) => {
-            const groups = [];
-            if (!node) return groups;
-
-            if (Array.isArray(node.all)) {
-                node.all.forEach(child => {
-                    if (Array.isArray(child.any)) {
-                        const group = child.any
-                            .filter(f => f && f.fact === 'medications' && f.value)
-                            .map(f => String(f.value).toLowerCase().trim());
-                        if (group.length > 0) groups.push(group);
-                    } else if (Array.isArray(child.all)) {
-                        groups.push(...collectMedicationGroups(child));
-                    } else if (child && child.fact === 'medications' && child.value) {
-                        groups.push([String(child.value).toLowerCase().trim()]);
-                    }
-                });
-            }
-
-            if (Array.isArray(node.any)) {
-                const group = node.any
-                    .filter(f => f && f.fact === 'medications' && f.value)
-                    .map(f => String(f.value).toLowerCase().trim());
-                if (group.length > 0) groups.push(group);
-            }
-
-            if (node.fact === 'medications' && node.value && !Array.isArray(node.all) && !Array.isArray(node.any)) {
-                groups.push([String(node.value).toLowerCase().trim()]);
-            }
-
-            return groups;
         };
 
         // Helper to check if a condition targets ANY of the provided medications
@@ -671,11 +641,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                    (op === 'lessThan' && val <= 18) || (op === 'lessThanOrEqual' && val <= 18);
         };
 
-        // Helper: Check if two medications match (including partial matches)
+        // Helper: Check if two medication names match (including partial matches)
         const medsMatch = (med1, med2) => {
-            const m1 = med1.toLowerCase().trim();
-            const m2 = med2.toLowerCase().trim();
-            return m1.includes(m2) || m2.includes(m1);
+            const m1 = String(med1).toLowerCase().trim();
+            const m2 = String(med2).toLowerCase().trim();
+            if (!m1 || !m2) return false;
+            return m1 === m2 || m1.includes(m2) || m2.includes(m1);
         };
 
         // Capitalize the first letter of a medication name
@@ -686,128 +657,110 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         // Helper: Check if a rule is an interaction rule
         const isInteractionRule = (rule) => {
-            const lowerName = String(rule.rule_name).toLowerCase();
-            const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType.includes('drug_interaction') || 
+            const lowerName = String(rule.rule_name || '').toLowerCase();
+            const lowerType = String(rule.rule_type || '').toLowerCase();
+            return lowerType.includes('drug_interaction') ||
+                   lowerType.includes('drug interaction') ||
                    lowerName.includes('interaction') ||
                    lowerName.includes('drug interaction');
         };
 
         // Helper: Check if a rule is an IV incompatibility rule
         const isIVIncompatibilityRule = (rule) => {
-            const lowerName = String(rule.rule_name).toLowerCase();
-            const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType === 'iv incompatibility' || 
-                   lowerName.includes('iv drug incompatibility') || 
+            const lowerName = String(rule.rule_name || '').toLowerCase();
+            const lowerType = String(rule.rule_type || '').toLowerCase();
+            return lowerType === 'iv incompatibility' ||
+                   lowerType.includes('iv incompatibility') ||
+                   lowerType.includes('iv_incompatibility') ||
+                   lowerName.includes('iv drug incompatibility') ||
                    lowerName.includes('iv incompatibility') ||
                    lowerName.includes('iv incompat');
         };
 
         /**
-         * Build the matched combination for a combination rule (3+ groups).
-         * Every group must have at least one matched searched drug; otherwise
-         * the rule is not satisfied and we return null.
+         * 🔑 CORE FIX — build all valid pairs from a rule's own drug list.
+         *
+         * Given:
+         *   - `ruleDrugs`: every distinct drug named in this rule (lowercased)
+         *   - `searchedDrugs`: the user's full search list (lowercased)
+         *
+         * Returns:
+         *   Array of [drugA, drugB] pairs (as originally typed / capitalized)
+         *   where BOTH drugs are in `ruleDrugs` AND BOTH are in `searchedDrugs`.
+         *
+         * This is what makes 3+ drug rules work: if a rule lists
+         *   [warfarin, aspirin, clopidogrel]
+         * and the user searched any combination of those, every pair
+         * that is fully covered by the search is emitted.
+         *
+         * NOTE: We intentionally do NOT require the user to have searched
+         * every drug listed in the rule. If they searched [warfarin, aspirin],
+         * the warfarin+aspirin pair is emitted. If they also searched
+         * clopidogrel, then warfarin+clopidogrel and aspirin+clopidogrel
+         * are also emitted.
+         *
+         * @param {string[]} ruleDrugs
+         * @param {string[]} searchedDrugs
+         * @returns {Array<[string, string]>}
          */
-        const buildMatchedCombination = (cond) => {
-            const groups = collectMedicationGroups(cond);
-            if (groups.length === 0) return null;
+        const buildInteractionPairs = (ruleDrugs, searchedDrugs) => {
+            // De-duplicate rule drugs
+            const uniqueRuleDrugs = [...new Set(ruleDrugs.filter(Boolean))];
 
-            const groupMatches = groups.map(group =>
-                meds.filter(searchMed =>
-                    group.some(ruleMed => medsMatch(ruleMed, searchMed))
-                )
-            );
+            // For each rule drug, find which searched drug(s) it corresponds to
+            const ruleDrugToSearch = new Map(); // ruleDrug -> searchedDrug
+            const matchedSearched = []; // array of { searched, rule }
 
-            // Every group must have at least one match
-            if (groupMatches.some(m => m.length === 0)) return null;
-
-            const matchedSet = new Set();
-            groupMatches.forEach(list => list.forEach(m => matchedSet.add(m)));
-            const matched = meds.filter(m => matchedSet.has(m));
-
-            if (matched.length < 2) return null;
-            return matched;
-        };
-
-        // ============================================
-        // Handle Drug Interactions & IV Incompatibilities
-        // - Pairwise rules (2 groups) → emit the pair, matching clinical pharmacy tool
-        // - Combination rules (3+ groups) → emit the full combination
-        // ============================================
-        const processInteractionRule = (rule, target) => {
-            const cond = rule.rule_condition;
-            if (!cond) return;
-            if (!hasMedication(cond)) return;
-
-            const allFacts = collectFacts(cond);
-            const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-            if (medFacts.length === 0) return;
-
-            const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
-            const matched = meds.filter(searchMed =>
-                allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-            );
-            if (matched.length < 2) return;
-
-            const groups = collectMedicationGroups(cond);
-            const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
-
-            // --- Pairwise rule: exactly 2 groups → emit the pair(s) ---
-            if (groups.length === 2) {
-                // For each group, find which searched medications match it
-                const groupAMatches = meds.filter(searchMed =>
-                    groups[0].some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-                const groupBMatches = meds.filter(searchMed =>
-                    groups[1].some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-
-                if (groupAMatches.length === 0 || groupBMatches.length === 0) return;
-
-                // Emit one pair per unique combination of A×B
-                const pairs = [];
-                groupAMatches.forEach(m1 => {
-                    groupBMatches.forEach(m2 => {
-                        if (m1 !== m2) {
-                            pairs.push(`${capitalizeMed(m1)} + ${capitalizeMed(m2)}`);
+            uniqueRuleDrugs.forEach(ruleDrug => {
+                searchedDrugs.forEach(searched => {
+                    if (medsMatch(ruleDrug, searched)) {
+                        if (!ruleDrugToSearch.has(ruleDrug)) {
+                            ruleDrugToSearch.set(ruleDrug, searched);
+                            matchedSearched.push({ searched, rule: ruleDrug });
                         }
-                    });
+                    }
                 });
+            });
 
-                [...new Set(pairs)].forEach(pairText => {
-                    const text = msg ? `${pairText} — ${msg}` : pairText;
-                    if (!target.includes(text)) target.push(text);
-                });
-                return;
+            // Need at least 2 matched searched drugs to form a pair
+            if (matchedSearched.length < 2) return [];
+
+            // Generate all unique unordered pairs
+            const pairs = [];
+            const seenPairKeys = new Set();
+
+            for (let i = 0; i < matchedSearched.length; i++) {
+                for (let j = i + 1; j < matchedSearched.length; j++) {
+                    const a = matchedSearched[i].searched;
+                    const b = matchedSearched[j].searched;
+
+                    // Defensive: don't pair a drug with itself
+                    if (medsMatch(a, b)) continue;
+
+                    // Canonical key so we never emit the same pair twice
+                    const key = [a, b].sort().join('||');
+                    if (seenPairKeys.has(key)) continue;
+                    seenPairKeys.add(key);
+
+                    // Preserve the order the user typed them in
+                    const ordered = meds.indexOf(a) <= meds.indexOf(b) ? [a, b] : [b, a];
+                    pairs.push(ordered);
+                }
             }
 
-            // --- Combination rule: 3+ groups → emit the FULL combination only ---
-            const combo = buildMatchedCombination(cond);
-            if (combo && combo.length >= 2) {
-                const comboText = combo.map(m => capitalizeMed(m)).join(' + ');
-                const text = msg ? `${comboText} — ${msg}` : comboText;
-                if (!target.includes(text)) target.push(text);
-            }
+            return pairs;
         };
 
-        rules.forEach(rule => {
-            if (meds.length < 2) return;
-
-            if (isInteractionRule(rule)) {
-                processInteractionRule(rule, safetyProfile.major_interactions);
-            }
-
-            if (isIVIncompatibilityRule(rule)) {
-                processInteractionRule(rule, safetyProfile.iv_incompatibility);
-            }
-        });
-
-        // ============================================
-        // Category rules (pregnancy, lactation, elderly, neonate, kidney, liver)
-        // ============================================
+        // ============================================================
+        // Parse each rule
+        // ============================================================
         rules.forEach(rule => {
             const cond = rule.rule_condition;
+
+            // Skip rules that don't have a condition
             if (!cond) return;
+
+            // Quick filter: rule must reference at least one searched medication
             if (!hasMedication(cond)) return;
 
             const allFacts = collectFacts(cond);
@@ -817,83 +770,156 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const detail = (rec ? `${msg} ${rec}` : msg);
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
 
-            const lowerRuleName = String(rule.rule_name).toLowerCase();
-            const lowerRuleType = String(rule.rule_type).toLowerCase();
+            const lowerRuleName = String(rule.rule_name || '').toLowerCase();
+            const lowerRuleType = String(rule.rule_type || '').toLowerCase();
 
+            // Get ONLY the searched medications that match this rule (for category annotations)
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
-            const capitalizedMeds = matchedSearchedMeds.map(m =>
-                m.charAt(0).toUpperCase() + m.slice(1)
-            );
+            const capitalizedMeds = matchedSearchedMeds.map(m => capitalizeMed(m));
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
-            // Check for pregnancy - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
-                safetyProfile.categories.pregnancy = { 
-                    status, 
+            // ------------------------------------------------------------
+            // Drug Interactions
+            // ------------------------------------------------------------
+            if (isInteractionRule(rule)) {
+                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
+                if (medFacts.length === 0) return;
+
+                // Every distinct drug named anywhere in this rule
+                const ruleDrugs = [...new Set(
+                    medFacts.map(f => String(f.value).toLowerCase().trim()).filter(Boolean)
+                )];
+
+                // 🔑 Build all pairs among the SEARCHED drugs that co-occur in this rule
+                const pairs = buildInteractionPairs(ruleDrugs, meds);
+
+                pairs.forEach(([a, b]) => {
+                    const pairLabel = `${capitalizeMed(a)} + ${capitalizeMed(b)}`;
+                    let text = pairLabel;
+                    if (msg) text += ` — ${msg}`;
+                    if (rec) text += ` (${rec})`;
+                    if (!safetyProfile.major_interactions.includes(text)) {
+                        safetyProfile.major_interactions.push(text);
+                    }
+                });
+            }
+
+            // ------------------------------------------------------------
+            // IV Incompatibility
+            // ------------------------------------------------------------
+            if (isIVIncompatibilityRule(rule)) {
+                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
+                if (medFacts.length === 0) return;
+
+                const ruleDrugs = [...new Set(
+                    medFacts.map(f => String(f.value).toLowerCase().trim()).filter(Boolean)
+                )];
+
+                const pairs = buildInteractionPairs(ruleDrugs, meds);
+
+                pairs.forEach(([a, b]) => {
+                    const pairLabel = `${capitalizeMed(a)} + ${capitalizeMed(b)}`;
+                    let text = pairLabel;
+                    if (msg) text += ` — ${msg}`;
+                    if (rec) text += ` (${rec})`;
+                    if (!safetyProfile.iv_incompatibility.includes(text)) {
+                        safetyProfile.iv_incompatibility.push(text);
+                    }
+                });
+            }
+
+            // ------------------------------------------------------------
+            // Category rules (pregnancy, lactation, elderly, neonate,
+            // kidney failure, liver failure) — unchanged semantics
+            // ------------------------------------------------------------
+
+            // Pregnancy
+            if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') ||
+                allFacts.some(f => f.fact === 'pregnancy' ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
+                safetyProfile.categories.pregnancy = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
-            // Check for lactation - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
-                safetyProfile.categories.lactation = { 
-                    status, 
+            // Lactation
+            if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') ||
+                lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') ||
+                allFacts.some(f => f.fact === 'lactation' ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
+                safetyProfile.categories.lactation = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
-            // Check for elderly - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
-                safetyProfile.categories.elderly = { 
-                    status, 
+            // Elderly
+            if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') ||
+                lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
+                safetyProfile.categories.elderly = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
-            // Check for neonates/pediatrics - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
-                safetyProfile.categories.neonate = { 
-                    status, 
+            // Neonate / Pediatric
+            if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') ||
+                lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') ||
+                lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') ||
+                allFacts.some(f => isNeonateCheck(f))) {
+                safetyProfile.categories.neonate = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
-            // Check for kidney failure - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f => 
-                f.fact === 'labs.creatinine_clearance' || f.fact === 'labs.egfr' || f.fact === 'labs.serum_creatinine' ||
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) || 
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('kidney')) ||
-                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('renal')) ||
-                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('kidney'))
-            )) {
-                safetyProfile.categories.kidney_failure = { 
-                    status, 
+            // Kidney Failure
+            if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') ||
+                lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') ||
+                allFacts.some(f =>
+                    f.fact === 'labs.creatinine_clearance' ||
+                    f.fact === 'labs.egfr' ||
+                    f.fact === 'labs.serum_creatinine' ||
+                    (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) ||
+                    (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('kidney')) ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('renal')) ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('kidney'))
+                )) {
+                safetyProfile.categories.kidney_failure = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
-            // Check for liver failure - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f => 
-                f.fact === 'labs.total_bilirubin' || f.fact === 'labs.ast' || f.fact === 'labs.alt' || f.fact === 'labs.inr' ||
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) || 
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('hepatic')) ||
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('cirrhosis')) ||
-                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('liver')) ||
-                (f.fact === 'conditions' && String(f.value).toLowerCase().includes('hepatic'))
-            )) {
-                safetyProfile.categories.liver_failure = { 
-                    status, 
+            // Liver Failure
+            if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') ||
+                lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') ||
+                lowerRuleName.includes('cirrhosis') ||
+                allFacts.some(f =>
+                    f.fact === 'labs.total_bilirubin' ||
+                    f.fact === 'labs.ast' ||
+                    f.fact === 'labs.alt' ||
+                    f.fact === 'labs.inr' ||
+                    (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) ||
+                    (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('hepatic')) ||
+                    (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('cirrhosis')) ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('liver')) ||
+                    (f.fact === 'conditions' && String(f.value).toLowerCase().includes('hepatic'))
+                )) {
+                safetyProfile.categories.liver_failure = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
         });
-        
+
         // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
         safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
@@ -905,7 +931,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         console.log('📊 Interactions:', safetyProfile.major_interactions);
         console.log('📊 IV Incompatibilities:', safetyProfile.iv_incompatibility);
 
-        res.json({ success: true, safetyProfile, disclaimer: 'Safety profile generated from internal clinical rules database.' });
+        res.json({
+            success: true,
+            safetyProfile,
+            disclaimer: 'Safety profile generated from internal clinical rules database.'
+        });
 
     } catch (e) {
         console.error('❌ Quick Safety Error:', e);
