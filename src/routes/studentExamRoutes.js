@@ -34,15 +34,26 @@ router.get('/published', authenticateToken, async (req, res) => {
 
 /**
  * 📝 GET QUESTIONS FOR EXAM
- * Fetch questions to take the exam. We do not return 'isCorrect' or 'explanation' 
- * here if we want to prevent cheating, but since the frontend expects them for 
- * immediate feedback, we will return the full JSONB options and explanations.
+ * Fetch questions to take the exam.
+ *
+ * Route: GET /exams/:id/questions
+ * Also exposed as GET /exams/:id/take for backward compatibility.
+ *
+ * Query params:
+ *   - limit (optional): max number of questions to return.
+ *                       Frontend uses this to request a random subset.
+ *   - shuffle (optional): "true" to randomize question order server-side.
+ *
+ * Response shape:
+ *   { success: true, exam, questions: [{ id, questionText, options, explanation, correctAnswer }] }
  */
-router.get('/:id/take', authenticateToken, async (req, res) => {
+const getExamQuestions = async (req, res) => {
     try {
         const { id } = req.params;
+        const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+        const shouldShuffle = req.query.shuffle === 'true';
 
-        // First verify the exam is published
+        // Verify the exam is published
         const { data: exam, error: examError } = await db()
             .from('exams')
             .select('*')
@@ -51,7 +62,10 @@ router.get('/:id/take', authenticateToken, async (req, res) => {
             .single();
 
         if (examError || !exam) {
-            return res.status(404).json({ success: false, error: 'Exam not found or not published' });
+            return res.status(404).json({
+                success: false,
+                error: 'Exam not found or not published'
+            });
         }
 
         const { data: questions, error: qError } = await db()
@@ -62,13 +76,35 @@ router.get('/:id/take', authenticateToken, async (req, res) => {
 
         if (qError) throw qError;
 
-        // Map database schema to frontend expected format
-        const formattedQuestions = (questions || []).map(q => ({
+        // Map DB schema -> frontend expected format
+        let formattedQuestions = (questions || []).map(q => ({
             id: q.id,
             questionText: q.question_text,
             options: q.options,
-            explanation: q.explanation
+            explanation: q.explanation,
+            // IMPORTANT: include the correct answer so the frontend
+            // can score answers. Remove this field if scoring is
+            // moved to a dedicated server-side submit endpoint.
+            correctAnswer:
+                q.correct_answer ??
+                q.correctAnswer ??
+                q.answer ??
+                null
         }));
+
+        // Optional shuffle
+        if (shouldShuffle) {
+            for (let i = formattedQuestions.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [formattedQuestions[i], formattedQuestions[j]] =
+                    [formattedQuestions[j], formattedQuestions[i]];
+            }
+        }
+
+        // Optional limit (e.g. ?limit=40)
+        if (limit && limit > 0) {
+            formattedQuestions = formattedQuestions.slice(0, limit);
+        }
 
         res.json({
             success: true,
@@ -76,9 +112,19 @@ router.get('/:id/take', authenticateToken, async (req, res) => {
             questions: formattedQuestions
         });
     } catch (error) {
-        console.error('❌ [StudentExams/Take] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch exam questions', details: error.message });
+        console.error('❌ [StudentExams/Questions] error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch exam questions',
+            details: error.message
+        });
     }
-});
+};
+
+// Primary route (matches frontend)
+router.get('/:id/questions', authenticateToken, getExamQuestions);
+
+// Backward-compatible alias
+router.get('/:id/take', authenticateToken, getExamQuestions);
 
 export default router;
