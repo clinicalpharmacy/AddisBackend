@@ -522,10 +522,12 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * ENHANCED: Now properly captures interactions and IV incompatibilities for:
  * - Single drug searches (shows all interactions involving that drug)
  * - Multi-drug searches (shows ONLY interactions involving the searched drugs)
- * 
- * FIXED: Drug interactions now display the EXACT drug combination from the rule
- *        instead of generating all possible pairs. This correctly represents
- *        triple-drug interactions like "Triple Whammy" as a single entry.
+ *
+ * FIXED: Shows the EXACT drug combination from each rule as ONE entry.
+ *        - 2-drug rule  → displays only the pair: "Drug A + Drug B"
+ *        - 3+ drug rule → displays the full set: "Drug A + Drug B + Drug C"
+ *        Previously, all possible pairs were generated, causing 3-drug rules
+ *        like "Triple Whammy" to appear as 3 fragmented 2-drug entries.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -585,19 +587,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return results;
         };
 
-        // Helper: get all medications from a condition
-        const getMedicationsFromCondition = (condition) => {
+        // Helper to check if a condition targets ANY of the provided medications
+        const hasMedication = (condition) => {
             const facts = collectFacts(condition);
-            const foundMeds = [];
-            facts.forEach(f => {
-                if (f.fact === 'medications' && f.value) {
-                    const val = String(f.value).toLowerCase().trim();
-                    if (!foundMeds.includes(val)) {
-                        foundMeds.push(val);
-                    }
-                }
-            });
-            return foundMeds;
+            return facts.some(f => f.fact === 'medications' && f.value && meds.some(m => {
+                const ruleVal = String(f.value).toLowerCase();
+                return ruleVal.includes(m) || m.includes(ruleVal);
+            }));
         };
 
         // Helper: get ONLY the searched medications that match the condition
@@ -672,18 +668,33 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         // ============================================================
-        // FIXED: Build the exact drug combination string from a rule.
-        // Returns the combo of ONLY the searched medications that are
-        // present in the rule, preserving the rule's own order.
+        // FIXED: Build the EXACT drug combination from a rule's condition.
+        // Preserves the rule's own ordering of medication facts and keeps
+        // ONLY the searched medications that are present in the rule.
+        //
+        //   - 2-drug rule  → returns [medA, medB]        → "MedA + MedB"
+        //   - 3-drug rule  → returns [medA, medB, medC]   → "MedA + MedB + MedC"
+        //
+        // Returns null if fewer than 2 searched medications match.
         // ============================================================
         const buildRuleCombination = (condition) => {
-            const ruleMeds = getMedicationsFromCondition(condition);
+            const medFacts = collectFacts(condition).filter(
+                f => f.fact === 'medications' && f.value
+            );
+            if (medFacts.length === 0) return null;
+
+            // Deduplicate rule medications while preserving their order
+            const ruleMeds = [];
+            medFacts.forEach(f => {
+                const val = String(f.value).toLowerCase().trim();
+                if (val && !ruleMeds.includes(val)) {
+                    ruleMeds.push(val);
+                }
+            });
+
             if (ruleMeds.length < 2) return null;
 
-            // Walk through the rule's medications in order, keeping only
-            // those that match a searched medication. This preserves the
-            // rule's intended combination (e.g., Losartan + Furosemide + Diclofenac
-            // for "Triple Whammy") rather than generating pairs.
+            // Walk rule meds in order, keep only those matching a searched med
             const matched = [];
             ruleMeds.forEach(ruleMed => {
                 const hit = meds.find(searchMed =>
@@ -696,10 +707,15 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Need at least 2 matched drugs to form an interaction
             if (matched.length < 2) return null;
-
-            // Sort by original rule order so the display is deterministic
             return matched;
         };
+
+        // ============================================================
+        // Collect interaction & IV-incompatibility candidates first,
+        // then deduplicate intelligently across rules.
+        // ============================================================
+        const interactionCandidates = [];   // { matched: [...], msg, severity }
+        const incompatCandidates = [];      // { matched: [...], msg, severity }
 
         // Parse each rule
         rules.forEach(rule => {
@@ -709,16 +725,10 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             if (!cond) return;
             
             // Check if the rule contains any of the searched medications
-            const allFacts = collectFacts(cond);
-            const hasAnyMed = allFacts.some(f =>
-                f.fact === 'medications' && f.value &&
-                meds.some(m => {
-                    const ruleVal = String(f.value).toLowerCase();
-                    return ruleVal.includes(m) || m.includes(ruleVal);
-                })
-            );
+            const hasAnyMed = hasMedication(cond);
             if (!hasAnyMed) return;
 
+            const allFacts = collectFacts(cond);
             const severity = rule.severity;
             const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
             const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
@@ -736,46 +746,33 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
             // ============================================
-            // Handle Drug Interactions - ONLY for multiple drugs
-            // FIXED: Show the EXACT combination from the rule as one entry
-            //        (supports 2-drug and 3+ drug interactions like Triple Whammy)
+            // Drug Interactions — FIXED
+            // Show the EXACT combination from the rule, not all pairs.
+            //   Rule has 2 drugs → pair shown as-is
+            //   Rule has 3 drugs → full triple shown as-is
             // ============================================
             if (isInteractionRule(rule) && meds.length >= 2) {
                 const combo = buildRuleCombination(cond);
-                if (!combo) return;
-
-                // Build the interaction label: "Drug A + Drug B + Drug C"
-                const comboLabel = combo.map(capitalizeMed).join(' + ');
-
-                // Compose the full text: "Drug A + Drug B — <message>"
-                let interactionText = comboLabel;
-                if (msg) {
-                    interactionText += ` — ${msg}`;
-                }
-
-                // Deduplicate by full text so the same rule isn't added twice
-                if (!safetyProfile.major_interactions.includes(interactionText)) {
-                    safetyProfile.major_interactions.push(interactionText);
+                if (combo) {
+                    interactionCandidates.push({
+                        matched: combo,
+                        msg,
+                        severity: severity || 'unknown'
+                    });
                 }
             }
 
             // ============================================
-            // Handle IV Incompatibility - ONLY for multiple drugs
-            // FIXED: Show the EXACT combination from the rule as one entry
+            // IV Incompatibility — FIXED (same logic)
             // ============================================
             if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
                 const combo = buildRuleCombination(cond);
-                if (!combo) return;
-
-                const comboLabel = combo.map(capitalizeMed).join(' + ');
-
-                let incompatText = comboLabel;
-                if (msg) {
-                    incompatText += ` — ${msg}`;
-                }
-
-                if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                    safetyProfile.iv_incompatibility.push(incompatText);
+                if (combo) {
+                    incompatCandidates.push({
+                        matched: combo,
+                        msg,
+                        severity: severity || 'unknown'
+                    });
                 }
             }
 
@@ -846,10 +843,40 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 };
             }
         });
-        
-        // Remove duplicates from interactions and incompatibilities
-        safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
-        safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
+
+        // ============================================================
+        // Deduplicate interaction candidates by their drug SET.
+        // For each unique set of drugs, pick the candidate with the
+        // LARGEST matched set (most complete rule), then highest severity.
+        // This prevents duplicate entries when multiple rules hit the
+        // same combination.
+        // ============================================================
+        const severityRank = { critical: 4, high: 3, moderate: 2, low: 1, unknown: 0 };
+        const dedupCandidates = (candidates) => {
+            const groups = new Map();
+            candidates.forEach(c => {
+                const key = [...c.matched].sort().join('|');
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(c);
+            });
+
+            const result = [];
+            groups.forEach(group => {
+                group.sort((a, b) => {
+                    if (b.matched.length !== a.matched.length) return b.matched.length - a.matched.length;
+                    return (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0);
+                });
+                const best = group[0];
+                const comboLabel = best.matched.map(capitalizeMed).join(' + ');
+                let text = comboLabel;
+                if (best.msg) text += ` — ${best.msg}`;
+                result.push(text);
+            });
+            return result;
+        };
+
+        safetyProfile.major_interactions = dedupCandidates(interactionCandidates);
+        safetyProfile.iv_incompatibility = dedupCandidates(incompatCandidates);
 
         // Log the results for debugging
         console.log(`✅ IV Incompatibilities found: ${safetyProfile.iv_incompatibility.length}`);
