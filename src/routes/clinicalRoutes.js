@@ -522,6 +522,7 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  * ENHANCED: Now properly captures interactions and IV incompatibilities for:
  * - Single drug searches (shows all interactions involving that drug)
  * - Multi-drug searches (shows ONLY interactions involving the searched drugs)
+ * - Triple+ drug combinations (shows the FULL combination as per the rule, not pairs)
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -719,120 +720,75 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
             // ============================================
-            // Handle Drug Interactions
-            //  - Single drug search: show EVERY partner drug in the rule
-            //  - Multi-drug search: show ONLY pairs where BOTH drugs were searched
+            // Handle Drug Interactions - ONLY for multiple drugs
+            // Shows the FULL combination of matched drugs as a single entry
             // ============================================
-            if (isInteractionRule(rule)) {
+            if (isInteractionRule(rule) && meds.length >= 2) {
+                // Get all medication facts from the condition
                 const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-
-                if (medFacts.length > 0) {
-                    // Normalize each rule medication value. Supports:
-                    //   - one drug per fact: "warfarin"
-                    //   - combined value:    "warfarin, aspirin" / "warfarin / aspirin" / "warfarin and aspirin"
-                    const allRuleMeds = medFacts
-                        .flatMap(f => String(f.value).toLowerCase().split(/[,/+]|\band\b/))
-                        .map(s => s.trim())
-                        .filter(Boolean);
-
-                    if (meds.length === 1) {
-                        // ---- SINGLE DRUG MODE ----
-                        const searchedMed = meds[0];
-                        const partners = allRuleMeds.filter(rm => !medsMatch(rm, searchedMed));
-
-                        partners.forEach(partner => {
-                            let interactionText = `${capitalizeMed(searchedMed)} + ${capitalizeMed(partner)}`;
-                            if (msg) interactionText += ` — ${msg}`;
-                            if (!safetyProfile.major_interactions.includes(interactionText)) {
-                                safetyProfile.major_interactions.push(interactionText);
-                            }
-                        });
-                    } else {
-                        // ---- MULTI-DRUG MODE ----
-                        const matchedSearchedMedsForInteraction = meds.filter(searchMed =>
-                            allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                        );
-
-                        if (matchedSearchedMedsForInteraction.length >= 2) {
-                            const interactions = [];
-                            for (let i = 0; i < matchedSearchedMedsForInteraction.length; i++) {
-                                for (let j = i + 1; j < matchedSearchedMedsForInteraction.length; j++) {
-                                    const med1 = matchedSearchedMedsForInteraction[i];
-                                    const med2 = matchedSearchedMedsForInteraction[j];
-                                    const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                                    const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                                    if (med1InRule && med2InRule) {
-                                        interactions.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                                    }
-                                }
-                            }
-
-                            [...new Set(interactions)].forEach(interaction => {
-                                let interactionText = interaction;
-                                if (msg) interactionText += ` — ${msg}`;
-                                if (!safetyProfile.major_interactions.includes(interactionText)) {
-                                    safetyProfile.major_interactions.push(interactionText);
-                                }
-                            });
-                        }
+                
+                if (medFacts.length === 0) return;
+                
+                // Get all medications from the rule
+                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
+                
+                // Find which searched medications are in this rule (preserving search order)
+                const matchedSearchedMedsForInteraction = meds.filter(searchMed => 
+                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
+                );
+                
+                // For multiple drugs: only show if at least 2 searched drugs match
+                const shouldShow = matchedSearchedMedsForInteraction.length >= 2;
+                
+                if (shouldShow) {
+                    // Show the FULL combination of matched drugs as a single entry (e.g., "Drug A + Drug B + Drug C")
+                    const combinationStr = matchedSearchedMedsForInteraction
+                        .map(m => capitalizeMed(m))
+                        .join(' + ');
+                    
+                    let interactionText = combinationStr;
+                    if (msg) {
+                        interactionText += ` — ${msg}`;
+                    }
+                    if (!safetyProfile.major_interactions.includes(interactionText)) {
+                        safetyProfile.major_interactions.push(interactionText);
                     }
                 }
             }
 
             // ============================================
-            // Handle IV Incompatibility
-            //  - Single drug search: show EVERY partner drug in the rule
-            //  - Multi-drug search: show ONLY pairs where BOTH drugs were searched
+            // Handle IV Incompatibility - ONLY for multiple drugs
+            // Shows the FULL combination of matched drugs as a single entry
             // ============================================
-            if (isIVIncompatibilityRule(rule)) {
+            if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
+                // Get all medication facts from the condition
                 const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-
-                if (medFacts.length > 0) {
-                    const allRuleMeds = medFacts
-                        .flatMap(f => String(f.value).toLowerCase().split(/[,/+]|\band\b/))
-                        .map(s => s.trim())
-                        .filter(Boolean);
-
-                    if (meds.length === 1) {
-                        // ---- SINGLE DRUG MODE ----
-                        const searchedMed = meds[0];
-                        const partners = allRuleMeds.filter(rm => !medsMatch(rm, searchedMed));
-
-                        partners.forEach(partner => {
-                            let incompatText = `${capitalizeMed(searchedMed)} + ${capitalizeMed(partner)}`;
-                            if (msg) incompatText += ` — ${msg}`;
-                            if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                                safetyProfile.iv_incompatibility.push(incompatText);
-                            }
-                        });
-                    } else {
-                        // ---- MULTI-DRUG MODE ----
-                        const matchedSearchedMedsForIncompat = meds.filter(searchMed =>
-                            allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                        );
-
-                        if (matchedSearchedMedsForIncompat.length >= 2) {
-                            const incompatibilities = [];
-                            for (let i = 0; i < matchedSearchedMedsForIncompat.length; i++) {
-                                for (let j = i + 1; j < matchedSearchedMedsForIncompat.length; j++) {
-                                    const med1 = matchedSearchedMedsForIncompat[i];
-                                    const med2 = matchedSearchedMedsForIncompat[j];
-                                    const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                                    const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                                    if (med1InRule && med2InRule) {
-                                        incompatibilities.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                                    }
-                                }
-                            }
-
-                            [...new Set(incompatibilities)].forEach(incompat => {
-                                let incompatText = incompat;
-                                if (msg) incompatText += ` — ${msg}`;
-                                if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                                    safetyProfile.iv_incompatibility.push(incompatText);
-                                }
-                            });
-                        }
+                
+                if (medFacts.length === 0) return;
+                
+                // Get all medications from the rule
+                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
+                
+                // Find which searched medications are in this rule (preserving search order)
+                const matchedSearchedMedsForIncompat = meds.filter(searchMed => 
+                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
+                );
+                
+                // For multiple drugs: only show if at least 2 searched drugs match
+                const shouldShow = matchedSearchedMedsForIncompat.length >= 2;
+                
+                if (shouldShow) {
+                    // Show the FULL combination of matched drugs as a single entry (e.g., "Drug A + Drug B + Drug C")
+                    const combinationStr = matchedSearchedMedsForIncompat
+                        .map(m => capitalizeMed(m))
+                        .join(' + ');
+                    
+                    let incompatText = combinationStr;
+                    if (msg) {
+                        incompatText += ` — ${msg}`;
+                    }
+                    if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
+                        safetyProfile.iv_incompatibility.push(incompatText);
                     }
                 }
             }
