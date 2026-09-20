@@ -520,11 +520,10 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
  *   { all: [ {fact: "age", ...}, { any: [{fact: "medications", ...}, ...] } ] }
  * 
  * FIXED BEHAVIOUR:
- * - The interaction/IV display now mirrors the rule's own medication group
- *   structure. If the rule requires exactly 2 drugs (2 groups), it emits a
- *   PAIR. If the rule requires 3+ drugs (3+ groups), it emits the FULL
- *   COMBINATION. This prevents a pairwise rule from ever being expanded into
- *   a triple, and prevents a triple rule from being split into pairs.
+ * - Pairwise rules (2 medication groups) emit a PAIR, exactly matching the
+ *   clinical pharmacy tool.
+ * - Combination rules (3+ medication groups) emit the FULL COMBINATION.
+ * - This matches how the clinical pharmacy tool renders both kinds of rules.
  */
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
@@ -588,7 +587,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
          * Collect the rule's medication "groups" from its condition tree.
          * Each `any` block (top-level or nested) = one group. A plain medication
          * fact with no wrapper = its own singleton group. This tells us how many
-         * distinct drugs the rule requires.
+         * distinct drugs the rule requires, which lets us emit pairs for pairwise
+         * rules and full combinations for 3+ drug rules — matching the clinical
+         * pharmacy tool's rendering.
          */
         const collectMedicationGroups = (node) => {
             const groups = [];
@@ -703,9 +704,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         /**
-         * Build the matched combination for a rule based on its group structure.
-         * Every group must have at least one matched searched drug; otherwise the
-         * rule is not satisfied and we return null.
+         * Build the matched combination for a combination rule (3+ groups).
+         * Every group must have at least one matched searched drug; otherwise
+         * the rule is not satisfied and we return null.
          */
         const buildMatchedCombination = (cond) => {
             const groups = collectMedicationGroups(cond);
@@ -729,7 +730,9 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         };
 
         // ============================================
-        // Handle Drug Interactions
+        // Handle Drug Interactions & IV Incompatibilities
+        // - Pairwise rules (2 groups) → emit the pair, matching clinical pharmacy tool
+        // - Combination rules (3+ groups) → emit the full combination
         // ============================================
         const processInteractionRule = (rule, target) => {
             const cond = rule.rule_condition;
@@ -749,10 +752,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const groups = collectMedicationGroups(cond);
             const msg = rule.rule_action?.message_client || rule.rule_action?.message || rule.rule_name;
 
-            // --- Pairwise rule: exactly 2 groups → emit the pair(s) as before ---
+            // --- Pairwise rule: exactly 2 groups → emit the pair(s) ---
             if (groups.length === 2) {
-                // Preserve the original pair-generation semantics: emit every pair
-                // of matched searched drugs that are both present in the rule.
                 const pairs = [];
                 for (let i = 0; i < matched.length; i++) {
                     for (let j = i + 1; j < matched.length; j++) {
