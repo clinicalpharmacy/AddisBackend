@@ -754,17 +754,26 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // --- Pairwise rule: exactly 2 groups → emit the pair(s) ---
             if (groups.length === 2) {
+                // For each group, find which searched medications match it
+                const groupAMatches = meds.filter(searchMed =>
+                    groups[0].some(ruleMed => medsMatch(ruleMed, searchMed))
+                );
+                const groupBMatches = meds.filter(searchMed =>
+                    groups[1].some(ruleMed => medsMatch(ruleMed, searchMed))
+                );
+
+                if (groupAMatches.length === 0 || groupBMatches.length === 0) return;
+
+                // Emit one pair per unique combination of A×B
                 const pairs = [];
-                for (let i = 0; i < matched.length; i++) {
-                    for (let j = i + 1; j < matched.length; j++) {
-                        const m1 = matched[i];
-                        const m2 = matched[j];
-                        if (allRuleMeds.some(m => medsMatch(m, m1)) &&
-                            allRuleMeds.some(m => medsMatch(m, m2))) {
+                groupAMatches.forEach(m1 => {
+                    groupBMatches.forEach(m2 => {
+                        if (m1 !== m2) {
                             pairs.push(`${capitalizeMed(m1)} + ${capitalizeMed(m2)}`);
                         }
-                    }
-                }
+                    });
+                });
+
                 [...new Set(pairs)].forEach(pairText => {
                     const text = msg ? `${pairText} — ${msg}` : pairText;
                     if (!target.includes(text)) target.push(text);
