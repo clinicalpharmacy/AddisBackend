@@ -45,7 +45,10 @@ router.get('/published', authenticateToken, async (req, res) => {
  *   - shuffle (optional): "true" to randomize question order server-side.
  *
  * Response shape:
- *   { success: true, exam, questions: [{ id, questionText, options, explanation, correctAnswer }] }
+ *   { success: true, exam, questions: [{ id, questionText, options, explanation }] }
+ *
+ * Each option in `options` is guaranteed to carry an `isCorrect` boolean,
+ * because the frontend scores answers via `options.find(o => o.isCorrect)`.
  */
 const getExamQuestions = async (req, res) => {
     try {
@@ -76,21 +79,43 @@ const getExamQuestions = async (req, res) => {
 
         if (qError) throw qError;
 
-        // Map DB schema -> frontend expected format
-        let formattedQuestions = (questions || []).map(q => ({
-            id: q.id,
-            questionText: q.question_text,
-            options: q.options,
-            explanation: q.explanation,
-            // IMPORTANT: include the correct answer so the frontend
-            // can score answers. Remove this field if scoring is
-            // moved to a dedicated server-side submit endpoint.
-            correctAnswer:
+        // Map DB schema -> frontend expected format.
+        // Guarantees each option carries an `isCorrect` boolean.
+        let formattedQuestions = (questions || []).map(q => {
+            const rawOptions = Array.isArray(q.options) ? q.options : [];
+
+            // The DB may store the correct answer in a separate column.
+            // Support several naming conventions.
+            const explicitCorrectId =
                 q.correct_answer ??
                 q.correctAnswer ??
                 q.answer ??
-                null
-        }));
+                null;
+
+            const normalizedOptions = rawOptions.map((opt, idx) => {
+                // If the option already has an explicit boolean, trust it.
+                if (typeof opt.isCorrect === 'boolean') {
+                    return opt;
+                }
+
+                // Otherwise infer from the separate correct_answer column.
+                // Match by id first, then by index as a fallback.
+                const isCorrect =
+                    explicitCorrectId !== null &&
+                    (opt.id === explicitCorrectId ||
+                        String(opt.id) === String(explicitCorrectId) ||
+                        idx === explicitCorrectId);
+
+                return { ...opt, isCorrect };
+            });
+
+            return {
+                id: q.id,
+                questionText: q.question_text,
+                options: normalizedOptions,
+                explanation: q.explanation
+            };
+        });
 
         // Optional shuffle
         if (shouldShuffle) {
