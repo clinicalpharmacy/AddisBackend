@@ -739,20 +739,21 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const shouldShow = matchedSearchedMedsForInteraction.length >= 2;
                 
                 if (shouldShow) {
-                    // Create pairs of searched drugs that are both in the rule
-                    const interactions = [];
-                    for (let i = 0; i < matchedSearchedMedsForInteraction.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMedsForInteraction.length; j++) {
-                            const med1 = matchedSearchedMedsForInteraction[i];
-                            const med2 = matchedSearchedMedsForInteraction[j];
-                            // Check if both are in the rule
-                            const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                            const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                            if (med1InRule && med2InRule) {
-                                interactions.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                            }
+                    // Remove duplicate medications without using Set or spread syntax
+                    const interactionMedications = [];
+                    
+                    matchedSearchedMedsForInteraction.forEach(function(med) {
+                        if (interactionMedications.indexOf(med) === -1) {
+                            interactionMedications.push(med);
                         }
-                    }
+                    });
+                    
+                    // Format the complete medication list
+                    const interaction = interactionMedications
+                        .map(function(med) {
+                            return capitalizeMed(med);
+                        })
+                        .join(' + ');
                     
                     // Remove duplicates and add to safety profile
                     const uniqueInteractions = [...new Set(interactions)];
