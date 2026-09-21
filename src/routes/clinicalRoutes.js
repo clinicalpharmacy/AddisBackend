@@ -639,6 +639,46 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return matchedMeds;
         };
 
+        // Helper: recursively evaluate rule condition against searched meds ONLY
+        // Returns the matched meds that made it true, or null if false
+        const evaluateConditionForQuickSafety = (node) => {
+            if (!node) return null;
+            
+            if (node.all) {
+                const matched = [];
+                for (const child of node.all) {
+                    const res = evaluateConditionForQuickSafety(child);
+                    if (!res) return null; // all must be true
+                    res.forEach(m => { if (!matched.includes(m)) matched.push(m); });
+                }
+                return matched;
+            }
+            
+            if (node.any) {
+                const matched = [];
+                let anyTrue = false;
+                for (const child of node.any) {
+                    const res = evaluateConditionForQuickSafety(child);
+                    if (res) {
+                        anyTrue = true;
+                        res.forEach(m => { if (!matched.includes(m)) matched.push(m); });
+                    }
+                }
+                return anyTrue ? matched : null;
+            }
+            
+            if (node.fact === 'medications' && node.operator === 'contains' && node.value) {
+                const ruleVal = String(node.value).toLowerCase().trim();
+                // Check if any of the searched meds matches this rule value
+                const matchingSearchMeds = meds.filter(m => ruleVal.includes(m) || m.includes(ruleVal));
+                return matchingSearchMeds.length > 0 ? matchingSearchMeds : null;
+            }
+            
+            // For other facts (age, labs, etc.), since quick safety only checks meds, we assume they pass
+            // so we don't accidentally block interactions that also depend on patient age (we show them as a warning)
+            return [];
+        };
+
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
         const isElderlyCheck = (f) => {
             if (f.fact !== 'age') return false;
@@ -722,49 +762,17 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             // Handle Drug Interactions - ONLY for multiple drugs
             // ============================================
             if (isInteractionRule(rule) && meds.length >= 2) {
-                // Get all medication facts from the condition
-                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-                
-                if (medFacts.length === 0) return;
-                
-                // Get all medications from the rule
-                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
-                
-                // Find which searched medications are in this rule
-                const matchedSearchedMedsForInteraction = meds.filter(searchMed => 
-                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-                
-                // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMedsForInteraction.length >= 2;
-                
-                if (shouldShow) {
-                    // Create pairs of searched drugs that are both in the rule
-                    const interactions = [];
-                    for (let i = 0; i < matchedSearchedMedsForInteraction.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMedsForInteraction.length; j++) {
-                            const med1 = matchedSearchedMedsForInteraction[i];
-                            const med2 = matchedSearchedMedsForInteraction[j];
-                            // Check if both are in the rule
-                            const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                            const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                            if (med1InRule && med2InRule) {
-                                interactions.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                            }
-                        }
+                const matchedMeds = evaluateConditionForQuickSafety(cond);
+                if (matchedMeds && matchedMeds.length >= 2) {
+                    // It triggered! Sort to ensure consistent order (optional)
+                    const comboStr = matchedMeds.map(m => capitalizeMed(m)).join(' + ');
+                    let interactionText = comboStr;
+                    if (msg) {
+                        interactionText += ` — ${msg}`;
                     }
-                    
-                    // Remove duplicates and add to safety profile
-                    const uniqueInteractions = [...new Set(interactions)];
-                    uniqueInteractions.forEach(interaction => {
-                        let interactionText = interaction;
-                        if (msg) {
-                            interactionText += ` — ${msg}`;
-                        }
-                        if (!safetyProfile.major_interactions.includes(interactionText)) {
-                            safetyProfile.major_interactions.push(interactionText);
-                        }
-                    });
+                    if (!safetyProfile.major_interactions.includes(interactionText)) {
+                        safetyProfile.major_interactions.push(interactionText);
+                    }
                 }
             }
 
@@ -772,49 +780,17 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             // Handle IV Incompatibility - ONLY for multiple drugs
             // ============================================
             if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
-                // Get all medication facts from the condition
-                const medFacts = allFacts.filter(f => f.fact === 'medications' && f.value);
-                
-                if (medFacts.length === 0) return;
-                
-                // Get all medications from the rule
-                const allRuleMeds = medFacts.map(f => String(f.value).toLowerCase().trim());
-                
-                // Find which searched medications are in this rule
-                const matchedSearchedMedsForIncompat = meds.filter(searchMed => 
-                    allRuleMeds.some(ruleMed => medsMatch(ruleMed, searchMed))
-                );
-                
-                // For multiple drugs: only show if at least 2 searched drugs match
-                const shouldShow = matchedSearchedMedsForIncompat.length >= 2;
-                
-                if (shouldShow) {
-                    // Create pairs of searched drugs that are both in the rule
-                    const incompatibilities = [];
-                    for (let i = 0; i < matchedSearchedMedsForIncompat.length; i++) {
-                        for (let j = i + 1; j < matchedSearchedMedsForIncompat.length; j++) {
-                            const med1 = matchedSearchedMedsForIncompat[i];
-                            const med2 = matchedSearchedMedsForIncompat[j];
-                            // Check if both are in the rule
-                            const med1InRule = allRuleMeds.some(m => medsMatch(m, med1));
-                            const med2InRule = allRuleMeds.some(m => medsMatch(m, med2));
-                            if (med1InRule && med2InRule) {
-                                incompatibilities.push(`${capitalizeMed(med1)} + ${capitalizeMed(med2)}`);
-                            }
-                        }
+                const matchedMeds = evaluateConditionForQuickSafety(cond);
+                if (matchedMeds && matchedMeds.length >= 2) {
+                    // It triggered!
+                    const comboStr = matchedMeds.map(m => capitalizeMed(m)).join(' + ');
+                    let incompatText = comboStr;
+                    if (msg) {
+                        incompatText += ` — ${msg}`;
                     }
-                    
-                    // Remove duplicates and add to safety profile
-                    const uniqueIncompatibilities = [...new Set(incompatibilities)];
-                    uniqueIncompatibilities.forEach(incompat => {
-                        let incompatText = incompat;
-                        if (msg) {
-                            incompatText += ` — ${msg}`;
-                        }
-                        if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                            safetyProfile.iv_incompatibility.push(incompatText);
-                        }
-                    });
+                    if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
+                        safetyProfile.iv_incompatibility.push(incompatText);
+                    }
                 }
             }
 
