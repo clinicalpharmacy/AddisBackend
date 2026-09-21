@@ -669,8 +669,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             
             if (node.fact === 'medications' && node.operator === 'contains' && node.value) {
                 const ruleVal = String(node.value).toLowerCase().trim();
+                if (!ruleVal) return null; // Avoid empty string matching everything
                 // Check if any of the searched meds matches this rule value
-                const matchingSearchMeds = meds.filter(m => ruleVal.includes(m) || m.includes(ruleVal));
+                const matchingSearchMeds = meds.filter(m => {
+                    const searchMed = String(m).toLowerCase().trim();
+                    return searchMed && (ruleVal.includes(searchMed) || searchMed.includes(ruleVal));
+                });
                 return matchingSearchMeds.length > 0 ? matchingSearchMeds : null;
             }
             
