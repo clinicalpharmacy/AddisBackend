@@ -16,6 +16,11 @@ const getUserId = (user) => {
     return id ? String(id) : null;
 };
 
+// NEW: Normalize post_type coming from the client
+const normalizePostType = (value) => {
+    return value === 'price' ? 'price' : 'availability';
+};
+
 /**
  * @route GET /api/medication-availability
  * @desc Get all medication availability posts
@@ -224,7 +229,8 @@ router.post('/medication-availability/:id/comments', authenticateToken, async (r
  */
 router.post('/medication-availability', authenticateToken, async (req, res) => {
     try {
-        const { medication_needed, search_date, notes } = req.body;
+        // FIX: also destructure post_type from the request body
+        const { medication_needed, search_date, notes, post_type } = req.body;
         const myId = getUserId(req.user);
 
         if (!isValidUUID(myId)) return res.status(401).json({ error: 'Session expired or invalid. Please re-login.' });
@@ -235,6 +241,8 @@ router.post('/medication-availability', authenticateToken, async (req, res) => {
             medication_needed,
             search_date: search_date === '' ? null : search_date,
             notes,
+            // FIX: persist the post type (validated to 'availability' | 'price')
+            post_type: normalizePostType(post_type),
             created_at: new Date().toISOString()
         };
 
@@ -258,7 +266,8 @@ router.post('/medication-availability', authenticateToken, async (req, res) => {
 router.put('/medication-availability/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { medication_needed, search_date, notes } = req.body;
+        // FIX: also destructure post_type from the request body
+        const { medication_needed, search_date, notes, post_type } = req.body;
         const myId = getUserId(req.user);
 
         const { data: post, error: fetchError } = await supabase
@@ -276,6 +285,8 @@ router.put('/medication-availability/:id', authenticateToken, async (req, res) =
             medication_needed,
             search_date: search_date === '' ? null : search_date,
             notes,
+            // FIX: persist the post type on edit as well
+            post_type: normalizePostType(post_type),
             updated_at: new Date().toISOString()
         };
 
