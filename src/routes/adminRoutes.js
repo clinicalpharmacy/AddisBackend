@@ -210,27 +210,51 @@ router.put('/users/:id/subscription', authenticateToken, requireAdmin, async (re
             updates.email_verified = true;
         }
 
+        // ── INDIVIDUAL TRANSITION ──
+        // When changing account_type to 'individual', fully detach from company
+        const isTransitionToIndividual = account_type === 'individual';
+        if (isTransitionToIndividual) {
+            updates.company_id = null;
+            updates.account_type = 'individual';
+            // Reset role to 'user' unless admin explicitly set a different role
+            if (!role || role === 'company_admin') {
+                updates.role = 'user';
+            }
+            console.log(`🔄 [Subscription] Transitioning user ${userId} to individual — detaching from company`);
+        }
+
         // 2. Update users table
         await db.from('users').update(updates).eq('id', userId);
 
-        // 3. Update company_users table as well
-        const compUserUpdates = {
-            subscription_status: updates.subscription_status,
-            subscription_plan: updates.subscription_plan,
-            subscription_end_date: updates.subscription_end_date,
-            updated_at: now
-        };
-        if (company_id !== undefined) compUserUpdates.company_id = company_id || null;
-        if (role) compUserUpdates.role = role;
-        if (account_type) compUserUpdates.account_type = account_type;
-        if (subscription_status === 'active') {
-            compUserUpdates.approved = true;
-            compUserUpdates.email_verified = true;
+        // 3. Handle company_users table
+        if (isTransitionToIndividual) {
+            // REMOVE from company_users entirely when going to individual
+            const { error: delErr } = await db.from('company_users').delete().eq('id', userId);
+            if (delErr) {
+                console.warn(`⚠️ [Subscription] Could not remove user ${userId} from company_users:`, delErr.message);
+            } else {
+                console.log(`✅ [Subscription] Removed user ${userId} from company_users table`);
+            }
+        } else {
+            // Update company_users table as well
+            const compUserUpdates = {
+                subscription_status: updates.subscription_status,
+                subscription_plan: updates.subscription_plan,
+                subscription_end_date: updates.subscription_end_date,
+                updated_at: now
+            };
+            if (company_id !== undefined) compUserUpdates.company_id = company_id || null;
+            if (role) compUserUpdates.role = role;
+            if (account_type) compUserUpdates.account_type = account_type;
+            if (subscription_status === 'active') {
+                compUserUpdates.approved = true;
+                compUserUpdates.email_verified = true;
+            }
+            await db.from('company_users').update(compUserUpdates).eq('id', userId);
         }
-        await db.from('company_users').update(compUserUpdates).eq('id', userId);
 
-        // 4. Cascade to company if requested or if company_admin
-        const finalCompanyId = company_id !== undefined ? company_id : user.company_id;
+        // 4. Cascade to company if requested or if company_admin (skip if going individual)
+        const finalCompanyId = isTransitionToIndividual ? null : (company_id !== undefined ? company_id : user.company_id);
         if (finalCompanyId && (apply_to_company || user.role === 'company_admin' || account_type === 'company')) {
             await db.from('companies').update({
                 subscription_status: updates.subscription_status,
@@ -759,7 +783,7 @@ router.delete('/broadcasts/:id', authenticateToken, requireAdmin, async (req, re
 router.get('/notifications', authenticateToken, async (req, res) => {
     try {
         const db = supabaseAdmin || supabase;
-        const userId = req.user.id;
+        const userId = req.user.userId;
 
         // Get all broadcasts
         const { data: broadcasts, error: bErr } = await db
@@ -801,7 +825,7 @@ router.get('/notifications', authenticateToken, async (req, res) => {
 router.post('/notifications/:id/read', authenticateToken, async (req, res) => {
     try {
         const db = supabaseAdmin || supabase;
-        const userId = req.user.id;
+        const userId = req.user.userId;
         const broadcastId = req.params.id;
 
         // Upsert — ignore if already read
@@ -828,7 +852,7 @@ router.post('/notifications/:id/read', authenticateToken, async (req, res) => {
 router.post('/notifications/read-all', authenticateToken, async (req, res) => {
     try {
         const db = supabaseAdmin || supabase;
-        const userId = req.user.id;
+        const userId = req.user.userId;
 
         // Get all broadcast IDs
         const { data: broadcasts, error: bErr } = await db

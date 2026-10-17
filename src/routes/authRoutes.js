@@ -31,13 +31,22 @@ router.get('/me', authenticateToken, async (req, res) => {
         if (!data) return res.status(404).json({ success: false, error: 'Profile not found' });
 
         // Check company subscription if user has company_id
-        let companyId = data.company_id || req.user.company_id;
-        if (!companyId) {
-            const { data: compUser } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
-            if (compUser && compUser.company_id) companyId = compUser.company_id;
+        // BUT respect individual account_type — don't re-attach detached users
+        const dbAccountType = data.account_type || 'individual';
+        const isIndividual = dbAccountType === 'individual';
+
+        let companyId = data.company_id;
+
+        // Only look up company_users if the DB record suggests a company association
+        if (!companyId && !isIndividual) {
+            companyId = req.user.company_id || null;
+            if (!companyId) {
+                const { data: compUser } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
+                if (compUser && compUser.company_id) companyId = compUser.company_id;
+            }
         }
 
-        if (companyId) {
+        if (companyId && !isIndividual) {
             data.company_id = companyId;
             let { data: company } = await db.from('companies').select('*').eq('id', companyId).maybeSingle();
             let hasCompanySubscription = company && company.subscription_status === 'active';
@@ -72,6 +81,10 @@ router.get('/me', authenticateToken, async (req, res) => {
             if (data.role !== 'company_admin' && data.role !== 'admin' && data.role !== 'superadmin') {
                 data.account_type = 'company_user';
             }
+        } else if (isIndividual) {
+            // Ensure individual users don't get company data attached
+            data.company_id = null;
+            data.company = null;
         }
 
         // Remove sensitive fields
@@ -818,27 +831,37 @@ router.get('/me', authenticateToken, async (req, res) => {
         let user = null;
         const { userId, account_type } = req.user;
 
-        if (account_type === 'company_user' || req.user.user_type === 'company_user') {
+        // Always check users table first to get the DB truth for account_type
+        const { data: dbUser } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+
+        // Determine actual account type from DB (not JWT)
+        const dbAccountType = dbUser?.account_type || account_type || 'individual';
+        const isIndividualInDb = dbAccountType === 'individual';
+
+        if (!isIndividualInDb && (account_type === 'company_user' || req.user.user_type === 'company_user')) {
             const { data } = await supabase.from('company_users').select('*').eq('id', userId).maybeSingle();
             if (data) user = { ...data, user_type: 'company_user', account_type: 'company_user' };
-        } else {
-            const { data } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
-            if (data) user = { ...data, user_type: 'regular_user' };
+        }
+
+        if (!user && dbUser) {
+            user = { ...dbUser, user_type: 'regular_user' };
         }
 
         if (!user) { // Fallback
-            const { data: u } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
-            if (u) user = { ...u, user_type: 'regular_user' };
-            else {
-                const { data: cu } = await supabase.from('company_users').select('*').eq('id', userId).maybeSingle();
-                if (cu) user = { ...cu, user_type: 'company_user', account_type: 'company_user' };
-            }
+            const { data: cu } = await supabase.from('company_users').select('*').eq('id', userId).maybeSingle();
+            if (cu) user = { ...cu, user_type: 'company_user', account_type: 'company_user' };
         }
 
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
-        // NEW: Robust company identification
-        if (!user.company_id) {
+        // Override with DB truth — if DB says individual, respect it
+        if (isIndividualInDb) {
+            user.account_type = 'individual';
+            user.company_id = null;
+        }
+
+        // Robust company identification — ONLY for non-individual users
+        if (!user.company_id && !isIndividualInDb) {
             const { data: employeeRecord } = await supabase
                 .from('company_users')
                 .select('company_id')
@@ -847,21 +870,21 @@ router.get('/me', authenticateToken, async (req, res) => {
 
             if (employeeRecord && employeeRecord.company_id) {
                 user.company_id = employeeRecord.company_id;
-                user.is_shared_account = true; // Mark that we found a link
+                user.is_shared_account = true;
             }
         }
 
         let companyData = null;
-        if (user.company_id) {
+        if (user.company_id && !isIndividualInDb) {
             const { data } = await supabase.from('companies').select('*').eq('id', user.company_id).maybeSingle();
             companyData = data;
         }
 
         // Check if we should inherit subscription status from company
-        let hasCompanySubscription = companyData && companyData.subscription_status === 'active';
+        let hasCompanySubscription = !isIndividualInDb && companyData && companyData.subscription_status === 'active';
 
-        // NEW: Backup check in subscriptions history if company record is out of sync
-        if (user.company_id && !hasCompanySubscription) {
+        // Backup check in subscriptions history if company record is out of sync
+        if (user.company_id && !isIndividualInDb && !hasCompanySubscription) {
             const { data: activeSub = null } = await supabase
                 .from('subscriptions')
                 .select('*')
@@ -874,7 +897,6 @@ router.get('/me', authenticateToken, async (req, res) => {
 
             if (activeSub) {
                 hasCompanySubscription = true;
-                // Update local companyData for the response
                 companyData = companyData || { id: user.company_id };
                 companyData.subscription_status = 'active';
                 companyData.subscription_plan = activeSub.plan_id;
@@ -882,14 +904,14 @@ router.get('/me', authenticateToken, async (req, res) => {
             }
         }
 
-        const isCompanyAdmin = user.role === 'company_admin' || user.account_type === 'company';
-        const isEffectivelyCompanyUser = !isCompanyAdmin && (user.user_type === 'company_user' || !!user.company_id);
+        const isCompanyAdmin = !isIndividualInDb && (user.role === 'company_admin' || user.account_type === 'company');
+        const isEffectivelyCompanyUser = !isIndividualInDb && !isCompanyAdmin && (user.user_type === 'company_user' || !!user.company_id);
 
         // Get patient limit info for the user
         const mockUser = {
             role: user.role,
-            account_type: isCompanyAdmin ? 'company' : (user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual')),
-            company_id: user.company_id,
+            account_type: isIndividualInDb ? 'individual' : (isCompanyAdmin ? 'company' : (user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual'))),
+            company_id: isIndividualInDb ? null : user.company_id,
             userId: user.id
         };
         const patientLimit = getPatientLimit(mockUser);
@@ -908,14 +930,14 @@ router.get('/me', authenticateToken, async (req, res) => {
             email: user.email,
             full_name: user.full_name,
             role: user.role,
-            account_type: isCompanyAdmin ? 'company' : (isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual')),
+            account_type: isIndividualInDb ? 'individual' : (isCompanyAdmin ? 'company' : (isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual'))),
             phone: user.phone,
             approved: user.approved,
             institution: user.institution || (companyData ? companyData.company_name : ''),
             country: user.country,
             region: user.region,
-            company: companyData,
-            company_id: user.company_id,
+            company: isIndividualInDb ? null : companyData,
+            company_id: isIndividualInDb ? null : user.company_id,
             // Inherit active status from company if available
             subscription_status: hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive'),
             subscription_plan: hasCompanySubscription ? companyData.subscription_plan : (user.subscription_plan || null),
@@ -932,7 +954,7 @@ router.get('/me', authenticateToken, async (req, res) => {
             } : null
         };
 
-        res.json({ success: true, user: userResponse, user_type: user.user_type });
+        res.json({ success: true, user: userResponse, user_type: isIndividualInDb ? 'regular_user' : user.user_type });
     } catch (e) {
         console.error('/me error:', e);
         res.status(500).json({ success: false, error: 'Failed to fetch user data' });
