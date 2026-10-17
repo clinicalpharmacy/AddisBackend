@@ -163,6 +163,195 @@ router.put('/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     }
 });
 
+// Update user subscription & plan/role/company status (superadmin)
+router.put('/users/:id/subscription', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const userId = req.params.id;
+        const {
+            subscription_status,
+            subscription_plan,
+            subscription_end_date,
+            account_type,
+            company_id,
+            role,
+            apply_to_company
+        } = req.body;
+
+        if (!subscription_status) {
+            return res.status(400).json({ success: false, error: 'Subscription status is required' });
+        }
+
+        // 1. Fetch user from users or company_users
+        let { data: user, error: fetchErr } = await db.from('users').select('*').eq('id', userId).maybeSingle();
+
+        if (!user) {
+            const { data: compUser } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
+            if (!compUser) {
+                return res.status(404).json({ success: false, error: 'User not found' });
+            }
+            user = compUser;
+        }
+
+        const now = new Date().toISOString();
+        const updates = {
+            subscription_status: subscription_status,
+            subscription_plan: subscription_plan !== undefined ? subscription_plan : user.subscription_plan,
+            subscription_end_date: subscription_end_date !== undefined ? subscription_end_date : user.subscription_end_date,
+            updated_at: now
+        };
+
+        if (account_type) updates.account_type = account_type;
+        if (company_id !== undefined) updates.company_id = company_id || null;
+        if (role) updates.role = role;
+
+        if (subscription_status === 'active') {
+            updates.approved = true;
+            updates.email_verified = true;
+        }
+
+        // 2. Update users table
+        await db.from('users').update(updates).eq('id', userId);
+
+        // 3. Update company_users table as well
+        const compUserUpdates = {
+            subscription_status: updates.subscription_status,
+            subscription_plan: updates.subscription_plan,
+            subscription_end_date: updates.subscription_end_date,
+            updated_at: now
+        };
+        if (company_id !== undefined) compUserUpdates.company_id = company_id || null;
+        if (role) compUserUpdates.role = role;
+        if (account_type) compUserUpdates.account_type = account_type;
+        if (subscription_status === 'active') {
+            compUserUpdates.approved = true;
+            compUserUpdates.email_verified = true;
+        }
+        await db.from('company_users').update(compUserUpdates).eq('id', userId);
+
+        // 4. Cascade to company if requested or if company_admin
+        const finalCompanyId = company_id !== undefined ? company_id : user.company_id;
+        if (finalCompanyId && (apply_to_company || user.role === 'company_admin' || account_type === 'company')) {
+            await db.from('companies').update({
+                subscription_status: updates.subscription_status,
+                subscription_plan: updates.subscription_plan,
+                subscription_end_date: updates.subscription_end_date,
+                updated_at: now
+            }).eq('id', finalCompanyId);
+
+            await db.from('users').update({
+                subscription_status: updates.subscription_status,
+                subscription_plan: updates.subscription_plan,
+                subscription_end_date: updates.subscription_end_date
+            }).eq('company_id', finalCompanyId);
+
+            await db.from('company_users').update({
+                subscription_status: updates.subscription_status,
+                subscription_plan: updates.subscription_plan,
+                subscription_end_date: updates.subscription_end_date
+            }).eq('company_id', finalCompanyId);
+        }
+
+        // 5. Insert history into subscriptions table for ledger/audit
+        const planName = updates.subscription_plan
+            ? updates.subscription_plan.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+            : 'SuperAdmin Custom';
+
+        await db.from('subscriptions').insert([{
+            user_id: user.id,
+            company_id: finalCompanyId || null,
+            plan_id: updates.subscription_plan || 'custom',
+            plan_name: planName,
+            amount: 0,
+            currency: 'ETB',
+            status: updates.subscription_status,
+            payment_method: 'admin_override',
+            start_date: now,
+            end_date: updates.subscription_end_date,
+            created_at: now
+        }]);
+
+        const { data: refreshedUser } = await db.from('users').select('*').eq('id', userId).maybeSingle();
+
+        res.json({
+            success: true,
+            message: `Subscription successfully updated to ${updates.subscription_status} (${planName})`,
+            user: refreshedUser || { ...user, ...updates }
+        });
+    } catch (e) {
+        console.error('❌ Error updating user subscription:', e);
+        res.status(500).json({ success: false, error: 'Failed to update subscription', details: e.message });
+    }
+});
+
+// Update company subscription (superadmin)
+router.put('/companies/:id/subscription', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const companyId = req.params.id;
+        const {
+            subscription_status,
+            subscription_plan,
+            subscription_end_date
+        } = req.body;
+
+        if (!subscription_status) {
+            return res.status(400).json({ success: false, error: 'Subscription status is required' });
+        }
+
+        const now = new Date().toISOString();
+        const updates = {
+            subscription_status,
+            subscription_plan: subscription_plan || null,
+            subscription_end_date: subscription_end_date !== undefined ? subscription_end_date : null,
+            updated_at: now
+        };
+
+        const { data: company, error: compErr } = await db.from('companies').update(updates).eq('id', companyId).select().single();
+        if (compErr) throw compErr;
+
+        // Cascade to company staff in both users & company_users tables
+        await db.from('users').update({
+            subscription_status,
+            subscription_plan: updates.subscription_plan,
+            subscription_end_date: updates.subscription_end_date
+        }).eq('company_id', companyId);
+
+        await db.from('company_users').update({
+            subscription_status,
+            subscription_plan: updates.subscription_plan,
+            subscription_end_date: updates.subscription_end_date
+        }).eq('company_id', companyId);
+
+        // Audit log in subscriptions
+        const planName = updates.subscription_plan
+            ? updates.subscription_plan.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+            : 'Company Plan';
+
+        await db.from('subscriptions').insert([{
+            company_id: companyId,
+            plan_id: updates.subscription_plan || 'company_plan',
+            plan_name: planName,
+            amount: 0,
+            currency: 'ETB',
+            status: subscription_status,
+            payment_method: 'admin_override',
+            start_date: now,
+            end_date: updates.subscription_end_date,
+            created_at: now
+        }]);
+
+        res.json({
+            success: true,
+            message: `Company subscription updated to ${subscription_status} (${planName})`,
+            company
+        });
+    } catch (e) {
+        console.error('❌ Error updating company subscription:', e);
+        res.status(500).json({ success: false, error: 'Failed to update company subscription', details: e.message });
+    }
+});
+
 // Toggle block user (superadmin)
 router.post('/users/:id/toggle-block', authenticateToken, requireAdmin, async (req, res) => {
     try {
@@ -469,6 +658,207 @@ router.get('/referrals', authenticateToken, requireAdmin, async (req, res) => {
     } catch (err) {
         console.error('❌ [Admin/Referrals] error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to fetch referral data' });
+    }
+});
+
+// ==========================================
+// 📢 BROADCAST NOTIFICATIONS
+// ==========================================
+
+/**
+ * POST /api/admin/broadcasts
+ * Create a new broadcast notification sent to all users.
+ * Body: { title, message, priority? }
+ */
+router.post('/broadcasts', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const { title, message, priority } = req.body;
+
+        if (!title || !message) {
+            return res.status(400).json({ success: false, error: 'Title and message are required' });
+        }
+
+        // Insert the broadcast
+        const { data: broadcast, error: insertErr } = await db
+            .from('broadcasts')
+            .insert({
+                title: title.trim(),
+                message: message.trim(),
+                priority: priority || 'normal', // normal, important, urgent
+                created_by: req.user.id,
+                created_by_name: req.user.full_name || req.user.email
+            })
+            .select()
+            .single();
+
+        if (insertErr) throw insertErr;
+
+        console.log(`📢 [Broadcast] Created: "${title}" by ${req.user.email}`);
+        res.json({ success: true, broadcast });
+    } catch (error) {
+        console.error('❌ [Broadcast/Create] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to create broadcast' });
+    }
+});
+
+/**
+ * GET /api/admin/broadcasts
+ * List all broadcasts (admin view — shows all, including read stats).
+ */
+router.get('/broadcasts', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+
+        const { data: broadcasts, error } = await db
+            .from('broadcasts')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(100);
+
+        if (error) throw error;
+
+        res.json({ success: true, broadcasts: broadcasts || [] });
+    } catch (error) {
+        console.error('❌ [Broadcast/List] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch broadcasts' });
+    }
+});
+
+/**
+ * DELETE /api/admin/broadcasts/:id
+ * Delete a broadcast.
+ */
+router.delete('/broadcasts/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const { id } = req.params;
+
+        // Delete read records first
+        await db.from('broadcast_reads').delete().eq('broadcast_id', id);
+
+        // Delete the broadcast
+        const { error } = await db.from('broadcasts').delete().eq('id', id);
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Broadcast deleted' });
+    } catch (error) {
+        console.error('❌ [Broadcast/Delete] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to delete broadcast' });
+    }
+});
+
+// ==========================================
+// 📬 USER NOTIFICATION ENDPOINTS (non-admin)
+// ==========================================
+
+/**
+ * GET /api/admin/notifications
+ * Get all broadcasts for the currently logged-in user, with read/unread status.
+ */
+router.get('/notifications', authenticateToken, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const userId = req.user.id;
+
+        // Get all broadcasts
+        const { data: broadcasts, error: bErr } = await db
+            .from('broadcasts')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+        if (bErr) throw bErr;
+
+        // Get this user's read records
+        const { data: reads, error: rErr } = await db
+            .from('broadcast_reads')
+            .select('broadcast_id')
+            .eq('user_id', userId);
+
+        if (rErr) throw rErr;
+
+        const readSet = new Set((reads || []).map(r => r.broadcast_id));
+
+        const notifications = (broadcasts || []).map(b => ({
+            ...b,
+            is_read: readSet.has(b.id)
+        }));
+
+        const unread_count = notifications.filter(n => !n.is_read).length;
+
+        res.json({ success: true, notifications, unread_count });
+    } catch (error) {
+        console.error('❌ [Notifications/Get] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch notifications' });
+    }
+});
+
+/**
+ * POST /api/admin/notifications/:id/read
+ * Mark a single broadcast as read for the current user.
+ */
+router.post('/notifications/:id/read', authenticateToken, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const userId = req.user.id;
+        const broadcastId = req.params.id;
+
+        // Upsert — ignore if already read
+        const { error } = await db
+            .from('broadcast_reads')
+            .upsert(
+                { user_id: userId, broadcast_id: broadcastId },
+                { onConflict: 'user_id,broadcast_id' }
+            );
+
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Marked as read' });
+    } catch (error) {
+        console.error('❌ [Notifications/Read] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to mark as read' });
+    }
+});
+
+/**
+ * POST /api/admin/notifications/read-all
+ * Mark all broadcasts as read for the current user.
+ */
+router.post('/notifications/read-all', authenticateToken, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const userId = req.user.id;
+
+        // Get all broadcast IDs
+        const { data: broadcasts, error: bErr } = await db
+            .from('broadcasts')
+            .select('id');
+
+        if (bErr) throw bErr;
+
+        if (broadcasts && broadcasts.length > 0) {
+            // Get already-read IDs
+            const { data: existing } = await db
+                .from('broadcast_reads')
+                .select('broadcast_id')
+                .eq('user_id', userId);
+
+            const existingSet = new Set((existing || []).map(e => e.broadcast_id));
+            const toInsert = broadcasts
+                .filter(b => !existingSet.has(b.id))
+                .map(b => ({ user_id: userId, broadcast_id: b.id }));
+
+            if (toInsert.length > 0) {
+                const { error } = await db.from('broadcast_reads').insert(toInsert);
+                if (error) throw error;
+            }
+        }
+
+        res.json({ success: true, message: 'All notifications marked as read' });
+    } catch (error) {
+        console.error('❌ [Notifications/ReadAll] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to mark all as read' });
     }
 });
 

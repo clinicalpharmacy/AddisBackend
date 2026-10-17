@@ -30,6 +30,50 @@ router.get('/me', authenticateToken, async (req, res) => {
         if (error) throw error;
         if (!data) return res.status(404).json({ success: false, error: 'Profile not found' });
 
+        // Check company subscription if user has company_id
+        let companyId = data.company_id || req.user.company_id;
+        if (!companyId) {
+            const { data: compUser } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
+            if (compUser && compUser.company_id) companyId = compUser.company_id;
+        }
+
+        if (companyId) {
+            data.company_id = companyId;
+            let { data: company } = await db.from('companies').select('*').eq('id', companyId).maybeSingle();
+            let hasCompanySubscription = company && company.subscription_status === 'active';
+
+            if (!hasCompanySubscription) {
+                const { data: activeSub } = await db
+                    .from('subscriptions')
+                    .select('*')
+                    .eq('company_id', companyId)
+                    .eq('status', 'active')
+                    .gt('end_date', new Date().toISOString())
+                    .order('end_date', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+
+                if (activeSub) {
+                    hasCompanySubscription = true;
+                    company = company || { id: companyId };
+                    company.subscription_status = 'active';
+                    company.subscription_plan = activeSub.plan_id;
+                    company.subscription_end_date = activeSub.end_date;
+                }
+            }
+
+            if (hasCompanySubscription) {
+                data.subscription_status = 'active';
+                data.subscription_plan = company.subscription_plan;
+                data.subscription_end_date = company.subscription_end_date;
+                data.has_subscription = true;
+            }
+            data.company = company;
+            if (data.role !== 'company_admin' && data.role !== 'admin' && data.role !== 'superadmin') {
+                data.account_type = 'company_user';
+            }
+        }
+
         // Remove sensitive fields
         delete data.password_hash;
         delete data.verification_token;
@@ -148,52 +192,40 @@ router.post('/login', async (req, res) => {
             validPassword = await bcrypt.compare(cleanPassword, user.password_hash);
         }
 
+        // If regularUser password check failed, check if user exists in company_users with valid password
+        if (!validPassword && userType === 'regular_user') {
+            const { data: compUser } = await db.from('company_users').select('*, encryption_salt').eq('email', cleanEmail).maybeSingle();
+            if (compUser && compUser.password_hash) {
+                const compValid = await bcrypt.compare(cleanPassword, compUser.password_hash);
+                if (compValid) {
+                    validPassword = true;
+                    user = compUser;
+                    userType = 'company_user';
+                    // Sync password and company affiliation to users table
+                    await db.from('users').update({
+                        password_hash: compUser.password_hash,
+                        company_id: compUser.company_id,
+                        account_type: 'company_user',
+                        role: compUser.role || 'company_user',
+                        email_verified: true,
+                        approved: true,
+                        subscription_status: compUser.subscription_status || 'active',
+                        subscription_plan: compUser.subscription_plan,
+                        subscription_end_date: compUser.subscription_end_date
+                    }).eq('id', compUser.id);
+                }
+            }
+        }
 
         if (!validPassword) {
             const errorMsg = process.env.NODE_ENV === 'development' ? 'Debug: Password mismatch' : 'Invalid email or password';
             return res.status(401).json({ success: false, error: errorMsg });
         }
 
-        // Check verification and approval - Skip for admin, superadmin
-        if (user.role !== 'admin' && user.role !== 'superadmin') {
-            const isVerified = user.email_verified;
-            const isApproved = user.approved;
-
-            // 1. Company Admins: REQUIRE BOTH email verification and super-admin approval
-            if (user.role === 'company_admin' || user.account_type === 'company') {
-                if (!isVerified || !isApproved) {
-                    return res.status(401).json({
-                        success: false,
-                        error: !isVerified ? 'Please verify your email address.' : 'Your account is pending administrator approval.',
-                        email_verification_required: !isVerified,
-                        approval_required: !isApproved
-                    });
-                }
-            }
-
-            // 2. Individuals/Company Staff: REQUIRE email verification 
-            // (Approval is skipped because they are auto-approved as handled in signup/verification routes)
-            if (!isVerified) {
-                return res.status(401).json({
-                    success: false,
-                    error: 'Please verify your email address to log in.',
-                    email_verification_required: true
-                });
-            }
-        }
-
-        if (user.is_blocked) {
-            return res.status(403).json({
-                success: false,
-                error: 'Your account has been blocked. Please contact your administrator.'
-            });
-        }
-
+        // Check if user is company staff/employee
         let companyId = user.company_id;
-        const db_search = db;
-
         if (!companyId) {
-            const { data: employeeRecord } = await db_search
+            const { data: employeeRecord } = await db
                 .from('company_users')
                 .select('company_id')
                 .ilike('email', cleanEmail)
@@ -204,11 +236,56 @@ router.post('/login', async (req, res) => {
             }
         }
 
-        const isEffectivelyCompanyUser = userType === 'company_user' || !!companyId;
-        const account_type_to_use = isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual');
+        const isCompanyStaff = userType === 'company_user' || user.account_type === 'company_user' || !!companyId;
+        const isCompanyAdmin = user.role === 'company_admin' || user.account_type === 'company';
 
+        // Check verification and approval - Skip for admin, superadmin
+        if (user.role !== 'admin' && user.role !== 'superadmin') {
+            // 1. Company Admins: REQUIRE BOTH email verification and super-admin approval
+            if (isCompanyAdmin) {
+                const isVerified = user.email_verified;
+                const isApproved = user.approved;
+                if (!isVerified || !isApproved) {
+                    return res.status(401).json({
+                        success: false,
+                        error: !isVerified ? 'Please verify your email address.' : 'Your account is pending administrator approval.',
+                        email_verification_required: !isVerified,
+                        approval_required: !isApproved
+                    });
+                }
+            } else if (isCompanyStaff) {
+                // 2. Company Staff: Created and provisioned by their Company Admin.
+                // Auto-heal verified and approved status if needed.
+                if (!user.email_verified || !user.approved) {
+                    try {
+                        const targetTbl = userType === 'company_user' ? 'company_users' : 'users';
+                        await db.from(targetTbl).update({ email_verified: true, approved: true }).eq('id', user.id);
+                        user.email_verified = true;
+                        user.approved = true;
+                    } catch (e) {
+                        console.warn('Could not auto-heal company staff verification:', e.message);
+                    }
+                }
+            } else {
+                // 3. Regular Individual Users: REQUIRE email verification
+                if (!user.email_verified) {
+                    return res.status(401).json({
+                        success: false,
+                        error: 'Please verify your email address to log in.',
+                        email_verification_required: true
+                    });
+                }
+            }
+        }
 
+        if (user.is_blocked) {
+            return res.status(403).json({
+                success: false,
+                error: 'Your account has been blocked. Please contact your administrator.'
+            });
+        }
 
+        const account_type_to_use = isCompanyStaff ? (isCompanyAdmin ? 'company' : 'company_user') : (user.account_type || 'individual');
 
         let companyData = null;
         if (companyId) {
@@ -221,17 +298,31 @@ router.post('/login', async (req, res) => {
             try {
                 const { data: exists } = await db.from('users').select('id').eq('id', user.id).maybeSingle();
                 if (!exists) {
-
                     await db.from('users').insert([{
                         id: user.id,
                         email: user.email,
                         full_name: user.full_name,
                         role: user.role,
                         company_id: companyId,
+                        account_type: 'company_user',
                         approved: true,
-                        email_verified: user.email_verified,
-                        password_hash: user.password_hash // Store hash for potential login fallback
+                        email_verified: true,
+                        subscription_status: companyData?.subscription_status || user.subscription_status || 'inactive',
+                        subscription_plan: companyData?.subscription_plan || user.subscription_plan || null,
+                        subscription_end_date: companyData?.subscription_end_date || user.subscription_end_date || null,
+                        password_hash: user.password_hash
                     }]);
+                } else {
+                    await db.from('users').update({
+                        company_id: companyId,
+                        account_type: 'company_user',
+                        approved: true,
+                        email_verified: true,
+                        subscription_status: companyData?.subscription_status || user.subscription_status || 'inactive',
+                        subscription_plan: companyData?.subscription_plan || user.subscription_plan || null,
+                        subscription_end_date: companyData?.subscription_end_date || user.subscription_end_date || null,
+                        updated_at: new Date().toISOString()
+                    }).eq('id', user.id);
                 }
             } catch (syncError) {
                 console.warn('⚠️ [FIX] User sync warning:', syncError.message);
@@ -320,20 +411,21 @@ router.post('/login', async (req, res) => {
             full_name: user.full_name,
             role: user.role,
             approved: user.approved,
-            account_type: isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual'),
+            account_type: account_type_to_use,
             institution: user.institution || (companyData ? companyData.company_name : ''),
             company_id: companyId,
             company: companyData,
             subscription_status: hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive'),
             subscription_plan: hasCompanySubscription ? companyData.subscription_plan : (user.subscription_plan || null),
             subscription_end_date: hasCompanySubscription ? companyData.subscription_end_date : user.subscription_end_date,
+            has_subscription: hasCompanySubscription || user.subscription_status === 'active',
             created_at: user.created_at,
             phone: user.phone,
             country: user.country,
             region: user.region,
             tin_number: user.tin_number || '',
             license_number: user.license_number || '',
-            email_verified: user.email_verified,
+            email_verified: isCompanyStaff ? true : user.email_verified,
             // Patient limit info
             patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
             patient_limit_message: patientLimitMessage,
@@ -521,9 +613,9 @@ router.post('/register', async (req, res) => {
             role: role || 'pharmacist',
             account_type: account_type || 'individual',
             subscription_status: 'inactive',
-            email_verified: false,
-            email_verification_token: verificationToken,
-            email_verification_expires: verificationExpires,
+            email_verified: account_type === 'company_user',
+            email_verification_token: account_type === 'company_user' ? null : verificationToken,
+            email_verification_expires: account_type === 'company_user' ? null : verificationExpires,
             encryption_salt: encryptionSalt,
             promotion_code: promotionCode,
             referred_by_id: referredById,
@@ -539,7 +631,8 @@ router.post('/register', async (req, res) => {
         const patientLimit = getPatientLimit(mockUser);
         const patientLimitMessage = getPatientLimitMessage(mockUser);
 
-        if (!skip_verification_email) {
+        const isCompanyUser = account_type === 'company_user';
+        if (!skip_verification_email && !isCompanyUser) {
             // Send verification email (don't wait for it to complete)
             sendVerificationEmail(trimmedEmail, full_name.trim(), verificationToken)
                 .then(sent => {
@@ -553,14 +646,16 @@ router.post('/register', async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: skip_verification_email
-                ? 'Registration successful! Please complete your payment to verify your account.'
-                : 'Registration successful! Please check your email to verify your account.',
+            message: isCompanyUser
+                ? 'Registration successful! You can log in directly.'
+                : (skip_verification_email
+                    ? 'Registration successful! Please complete your payment to verify your account.'
+                    : 'Registration successful! Please check your email to verify your account.'),
             user: { id: user.id, email: user.email },
             id: user.id,
             userId: user.id,
-            email_verification_required: !skip_verification_email,
-            email_verification_skipped: !!skip_verification_email,
+            email_verification_required: !skip_verification_email && !isCompanyUser,
+            email_verification_skipped: !!skip_verification_email || isCompanyUser,
             patient_limit: patientLimit === Infinity ? 'unlimited' : patientLimit,
             patient_limit_message: patientLimitMessage,
             encryption_salt: encryptionSalt
@@ -787,12 +882,13 @@ router.get('/me', authenticateToken, async (req, res) => {
             }
         }
 
-        const isEffectivelyCompanyUser = user.user_type === 'company_user' || !!user.company_id;
+        const isCompanyAdmin = user.role === 'company_admin' || user.account_type === 'company';
+        const isEffectivelyCompanyUser = !isCompanyAdmin && (user.user_type === 'company_user' || !!user.company_id);
 
         // Get patient limit info for the user
         const mockUser = {
             role: user.role,
-            account_type: user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual'),
+            account_type: isCompanyAdmin ? 'company' : (user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual')),
             company_id: user.company_id,
             userId: user.id
         };
@@ -812,7 +908,7 @@ router.get('/me', authenticateToken, async (req, res) => {
             email: user.email,
             full_name: user.full_name,
             role: user.role,
-            account_type: isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual'),
+            account_type: isCompanyAdmin ? 'company' : (isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual')),
             phone: user.phone,
             approved: user.approved,
             institution: user.institution || (companyData ? companyData.company_name : ''),
@@ -1129,11 +1225,11 @@ router.post('/resend-verification', async (req, res) => {
             });
         }
 
-        // Removed payment check here to allow resending verification emails before payment, matching the new registration flow.
-        if (user.email_verified) {
+        // Company users and already verified users do not require email verification
+        if (user.email_verified || table === 'company_users' || user.account_type === 'company_user' || user.company_id) {
             return res.json({
                 success: true,
-                message: 'Email already verified. You can log in now.',
+                message: 'Company users are pre-verified by their company administrator. You can log in directly.',
                 already_verified: true
             });
         }

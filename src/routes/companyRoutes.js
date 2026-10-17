@@ -1,12 +1,13 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { supabase } from '../config/supabase.js';
+import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 import { isValidEmail } from '../utils/helpers.js';
 
 const router = express.Router();
+const db = supabaseAdmin || supabase;
 
 // Middleware to ensure company admin
 const requireCompanyAdmin = (req, res, next) => {
@@ -19,10 +20,10 @@ const requireCompanyAdmin = (req, res, next) => {
 router.get('/info', authenticateToken, requireCompanyAdmin, async (req, res) => {
     try {
         const userId = req.user.userId;
-        const { data: user } = await supabase.from('users').select('company_id').eq('id', userId).single();
+        const { data: user } = await db.from('users').select('company_id').eq('id', userId).single();
         if (!user || !user.company_id) return res.status(404).json({ error: 'Company not found' });
 
-        const { data: company } = await supabase.from('companies').select('*').eq('id', user.company_id).single();
+        const { data: company } = await db.from('companies').select('*').eq('id', user.company_id).single();
         res.json({ success: true, company, user_role: req.user.role });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
@@ -31,10 +32,10 @@ router.get('/info', authenticateToken, requireCompanyAdmin, async (req, res) => 
 
 router.get('/users', authenticateToken, requireCompanyAdmin, async (req, res) => {
     try {
-        const { data: user } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        const { data: user } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
         if (!user || !user.company_id) return res.status(404).json({ error: 'Company not found' });
 
-        const { data: users } = await supabase.from('company_users').select('*').eq('company_id', user.company_id).order('created_at', { ascending: false });
+        const { data: users } = await db.from('company_users').select('*').eq('company_id', user.company_id).order('created_at', { ascending: false });
         res.json({ success: true, users: users || [], count: users?.length || 0, company_id: user.company_id });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
@@ -47,41 +48,108 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
         if (!email || !password || !full_name) return res.status(400).json({ error: 'Missing fields' });
         if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
 
-        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        const cleanEmail = email.trim().toLowerCase();
+
+        const { data: admin } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
         if (!admin || !admin.company_id) return res.status(404).json({ error: 'Company not found' });
 
         // Get company's subscription status
-        const { data: company } = await supabase.from('companies').select('subscription_status, subscription_plan, subscription_end_date').eq('id', admin.company_id).single();
+        let { data: company } = await db.from('companies').select('*').eq('id', admin.company_id).single();
+        let isCompanyActive = company?.subscription_status === 'active';
 
-        const { data: existing } = await supabase.from('company_users').select('id').eq('email', email).eq('company_id', admin.company_id).maybeSingle();
-        if (existing) return res.status(400).json({ error: 'Email exists' });
+        // Backup check in subscriptions table
+        if (!isCompanyActive) {
+            const { data: activeSub } = await db.from('subscriptions')
+                .select('*')
+                .eq('company_id', admin.company_id)
+                .eq('status', 'active')
+                .gt('end_date', new Date().toISOString())
+                .order('end_date', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (activeSub) {
+                isCompanyActive = true;
+                company = company || {};
+                company.subscription_status = 'active';
+                company.subscription_plan = activeSub.plan_id;
+                company.subscription_end_date = activeSub.end_date;
+            }
+        }
+
+        const { data: existingInComp } = await db.from('company_users').select('id').eq('email', cleanEmail).eq('company_id', admin.company_id).maybeSingle();
+        if (existingInComp) return res.status(400).json({ error: 'This user is already added to your company' });
 
         const hashedPassword = await bcrypt.hash(password.trim(), 10);
 
-        // NEW: Inherit company's subscription status
+        // Check if user already exists in the regular users table
+        const { data: existingUser } = await db.from('users').select('*').eq('email', cleanEmail).maybeSingle();
+
+        const subStatus = isCompanyActive ? 'active' : (company?.subscription_status || 'inactive');
+        const subPlan = isCompanyActive ? (company?.subscription_plan || null) : null;
+        const subEndDate = isCompanyActive ? (company?.subscription_end_date || null) : null;
+
         const newUser = {
+            ...(existingUser?.id ? { id: existingUser.id } : {}),
             company_id: admin.company_id,
-            email: email.trim().toLowerCase(),
+            email: cleanEmail,
             password_hash: hashedPassword,
             full_name: full_name.trim(),
             phone: phone?.trim() || '',
             role,
             approved: true,
+            email_verified: true, // Company users created by admin are auto-verified
             account_type: 'company_user',
-            // Inherit from company
-            subscription_status: company?.subscription_status || 'inactive',
-            subscription_plan: company?.subscription_plan || null,
-            subscription_end_date: company?.subscription_end_date || null,
+            subscription_status: subStatus,
+            subscription_plan: subPlan,
+            subscription_end_date: subEndDate,
             license_number: license_number?.trim() || '',
             created_by: req.user.userId,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
 
-        const { data, error } = await supabase.from('company_users').insert([newUser]).select().single();
-        if (error) throw error;
+        const { data: createdCompUser, error: insertError } = await db.from('company_users').insert([newUser]).select().single();
+        if (insertError) throw insertError;
 
-        res.json({ success: true, message: 'User created', user: data });
+        // Also sync or create in regular 'users' table for foreign key integrity (e.g. active_sessions, patients)
+        const targetUserId = createdCompUser.id;
+        if (existingUser) {
+            await db.from('users').update({
+                company_id: admin.company_id,
+                account_type: 'company_user',
+                role,
+                full_name: full_name.trim(),
+                phone: phone?.trim() || existingUser.phone,
+                approved: true,
+                email_verified: true,
+                password_hash: hashedPassword,
+                subscription_status: subStatus,
+                subscription_plan: subPlan,
+                subscription_end_date: subEndDate,
+                updated_at: new Date().toISOString()
+            }).eq('id', existingUser.id);
+        } else {
+            await db.from('users').insert([{
+                id: targetUserId,
+                email: cleanEmail,
+                full_name: full_name.trim(),
+                phone: phone?.trim() || '',
+                role,
+                company_id: admin.company_id,
+                account_type: 'company_user',
+                approved: true,
+                email_verified: true,
+                password_hash: hashedPassword,
+                subscription_status: subStatus,
+                subscription_plan: subPlan,
+                subscription_end_date: subEndDate,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }]);
+        }
+
+        res.json({ success: true, message: 'User created', user: createdCompUser });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -90,14 +158,16 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
 router.post('/users/:userId/approve', authenticateToken, requireCompanyAdmin, async (req, res) => {
     try {
         const { userId } = req.params;
-        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        const { data: admin } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
         if (!admin) return res.status(404).json({ error: 'Company not found' });
 
-        const { data: target } = await supabase.from('users').select('company_id').eq('id', userId).single();
+        const { data: target } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
         if (!target) return res.status(404).json({ error: 'User not found' });
         if (target.company_id !== admin.company_id) return res.status(403).json({ error: 'Different company' });
 
-        await supabase.from('users').update({ approved: true, updated_at: new Date().toISOString() }).eq('id', userId);
+        await db.from('company_users').update({ approved: true, email_verified: true, updated_at: new Date().toISOString() }).eq('id', userId);
+        await db.from('users').update({ approved: true, email_verified: true, updated_at: new Date().toISOString() }).eq('id', userId);
+
         res.json({ success: true, message: 'Approved' });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -108,7 +178,7 @@ router.put('/users/:userId', authenticateToken, requireCompanyAdmin, async (req,
     try {
         const { userId } = req.params;
         const { full_name, phone, role, license_number, status } = req.body;
-        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        const { data: admin } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
 
         const updates = { updated_at: new Date().toISOString() };
         if (full_name) updates.full_name = full_name;
@@ -117,8 +187,16 @@ router.put('/users/:userId', authenticateToken, requireCompanyAdmin, async (req,
         if (license_number) updates.license_number = license_number;
         if (status) updates.status = status;
 
-        const { error } = await supabase.from('company_users').update(updates).eq('id', userId).eq('company_id', admin.company_id);
+        const { error } = await db.from('company_users').update(updates).eq('id', userId).eq('company_id', admin.company_id);
         if (error) throw error;
+
+        // Sync with users table as well
+        const userUpdates = { updated_at: new Date().toISOString() };
+        if (full_name) userUpdates.full_name = full_name;
+        if (phone) userUpdates.phone = phone;
+        if (role) userUpdates.role = role;
+        await db.from('users').update(userUpdates).eq('id', userId).eq('company_id', admin.company_id);
+
         res.json({ success: true, message: 'Updated' });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -128,9 +206,13 @@ router.put('/users/:userId', authenticateToken, requireCompanyAdmin, async (req,
 router.delete('/users/:userId', authenticateToken, requireCompanyAdmin, async (req, res) => {
     try {
         const { userId } = req.params;
-        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
-        const { error } = await supabase.from('company_users').delete().eq('id', userId).eq('company_id', admin.company_id);
+        const { data: admin } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
+        const { error } = await db.from('company_users').delete().eq('id', userId).eq('company_id', admin.company_id);
         if (error) throw error;
+
+        // Also clean up from users table if account_type is company_user
+        await db.from('users').delete().eq('id', userId).eq('company_id', admin.company_id).eq('account_type', 'company_user');
+
         res.json({ success: true, message: 'Deleted' });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -140,10 +222,10 @@ router.delete('/users/:userId', authenticateToken, requireCompanyAdmin, async (r
 router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmin, async (req, res) => {
     try {
         const { userId } = req.params;
-        const { data: admin } = await supabase.from('users').select('company_id').eq('id', req.user.userId).single();
+        const { data: admin } = await db.from('users').select('company_id').eq('id', req.user.userId).single();
         if (!admin) return res.status(404).json({ error: 'Company not found' });
 
-        const { data: user } = await supabase.from('company_users').select('is_blocked, blocked_by, company_id').eq('id', userId).single();
+        const { data: user } = await db.from('company_users').select('is_blocked, blocked_by, company_id').eq('id', userId).single();
         if (!user) return res.status(404).json({ error: 'User not found' });
         if (user.company_id !== admin.company_id) return res.status(403).json({ error: 'Not authorized for this user' });
 
@@ -156,7 +238,7 @@ router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmi
         }
 
         const newStatus = !user.is_blocked;
-        const { error } = await supabase.from('company_users')
+        const { error } = await db.from('company_users')
             .update({
                 is_blocked: newStatus,
                 blocked_by: newStatus ? 'company_admin' : null,
@@ -167,7 +249,7 @@ router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmi
         if (error) throw error;
 
         // Sync with users table
-        await supabase.from('users').update({
+        await db.from('users').update({
             is_blocked: newStatus,
             blocked_by: newStatus ? 'company_admin' : null
         }).eq('id', userId);
@@ -188,7 +270,7 @@ router.post('/auth/login', async (req, res) => {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Missing credentials' });
 
-        const { data: user } = await supabase.from('company_users').select('*').eq('email', email.toLowerCase()).maybeSingle();
+        const { data: user } = await db.from('company_users').select('*').eq('email', email.toLowerCase()).maybeSingle();
         if (!user || !user.approved) return res.status(401).json({ error: 'Invalid or pending approval' });
 
         if (user.is_blocked) {
@@ -217,10 +299,10 @@ router.get('/auth/me', authenticateToken, async (req, res) => {
     try {
         if (req.user.account_type !== 'company_user') return res.status(403).json({ error: 'Not company user' });
 
-        const { data: user } = await supabase.from('company_users').select('*').eq('id', req.user.userId).single();
+        const { data: user } = await db.from('company_users').select('*').eq('id', req.user.userId).single();
         if (!user) return res.status(404).json({ error: 'Not found' });
 
-        const { data: company } = await supabase.from('companies').select('*').eq('id', user.company_id).single();
+        const { data: company } = await db.from('companies').select('*').eq('id', user.company_id).single();
 
         res.json({ success: true, user: { ...user, company_name: company?.company_name } });
     } catch (e) {
@@ -235,7 +317,7 @@ router.put('/auth/update-profile', authenticateToken, async (req, res) => {
         const updates = { ...req.body, updated_at: new Date().toISOString() };
         ['id', 'email', 'company_id', 'approved', 'account_type', 'created_at', 'password_hash', 'created_by'].forEach(k => delete updates[k]);
 
-        const { data, error } = await supabase.from('company_users').update(updates).eq('id', req.user.userId).select().single();
+        const { data, error } = await db.from('company_users').update(updates).eq('id', req.user.userId).select().single();
         if (error) throw error;
 
         res.json({ success: true, message: 'Updated', user: data });
