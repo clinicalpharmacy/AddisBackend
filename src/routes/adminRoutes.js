@@ -201,26 +201,69 @@ router.put('/users/:id/subscription', authenticateToken, requireAdmin, async (re
             updated_at: now
         };
 
-        if (account_type) updates.account_type = account_type;
-        if (company_id !== undefined) updates.company_id = company_id || null;
-        if (role) updates.role = role;
-
         if (subscription_status === 'active') {
             updates.approved = true;
             updates.email_verified = true;
         }
 
-        // ── INDIVIDUAL TRANSITION ──
-        // When changing account_type to 'individual', fully detach from company
-        const isTransitionToIndividual = account_type === 'individual';
+        // Determine plan category
+        const isPlanIndividual = updates.subscription_plan && updates.subscription_plan.startsWith('individual');
+        const isTransitionToIndividual = account_type === 'individual' || (isPlanIndividual && account_type !== 'company' && account_type !== 'company_user');
+
         if (isTransitionToIndividual) {
+            // ── INDIVIDUAL TRANSITION ──
+            // Fully detach from any company
             updates.company_id = null;
             updates.account_type = 'individual';
-            // Reset role to 'user' unless admin explicitly set a different role
-            if (!role || role === 'company_admin') {
+            if (user.role !== 'admin' && user.role !== 'superadmin') {
                 updates.role = 'user';
             }
-            console.log(`🔄 [Subscription] Transitioning user ${userId} to individual — detaching from company`);
+            console.log(`🔄 [Subscription] Transitioning user ${userId} (${user.email}) to individual — detaching from company`);
+
+            // Clear any admin_id references in companies table
+            await db.from('companies').update({ admin_id: null }).eq('admin_id', userId);
+        } else if (account_type === 'company_user') {
+            // ── COMPANY USER / EMPLOYEE ──
+            updates.account_type = 'company_user';
+            if (company_id !== undefined) updates.company_id = company_id || null;
+            if (user.role !== 'admin' && user.role !== 'superadmin') {
+                updates.role = role || user.role || 'user';
+            }
+        } else {
+            // ── COMPANY / COMPANY ADMIN ──
+            updates.account_type = 'company';
+            if (user.role !== 'admin' && user.role !== 'superadmin') {
+                updates.role = 'company_admin';
+            }
+
+            // Find or assign company_id
+            let targetCompanyId = (company_id !== undefined ? company_id : user.company_id) || null;
+            if (!targetCompanyId && user.email) {
+                // Try finding company by admin_email or admin_id
+                const { data: compFound } = await db.from('companies')
+                    .select('id')
+                    .or(`admin_email.ilike.${user.email},admin_id.eq.${userId}`)
+                    .maybeSingle();
+                if (compFound && compFound.id) {
+                    targetCompanyId = compFound.id;
+                    console.log(`🏢 [Subscription] Auto-linked user ${userId} to company ${targetCompanyId}`);
+                }
+            }
+
+            updates.company_id = targetCompanyId;
+
+            // ⚠️ CRITICAL SAFETY: A user with role 'company_admin' but NO company_id will crash on dashboard
+            // If no company exists to link to, gracefully revert to 'individual' with role 'user'
+            if (!updates.company_id) {
+                console.warn(`⚠️ [Subscription] User ${userId} (${user.email}) has no associated company. Setting to individual to prevent lockout.`);
+                updates.account_type = 'individual';
+                if (user.role !== 'admin' && user.role !== 'superadmin') {
+                    updates.role = 'user';
+                }
+            } else {
+                // Ensure this user is marked as admin_id on the company
+                await db.from('companies').update({ admin_id: userId, admin_email: user.email }).eq('id', updates.company_id);
+            }
         }
 
         // 2. Update users table
@@ -228,24 +271,23 @@ router.put('/users/:id/subscription', authenticateToken, requireAdmin, async (re
 
         // 3. Handle company_users table
         if (isTransitionToIndividual) {
-            // REMOVE from company_users entirely when going to individual
-            const { error: delErr } = await db.from('company_users').delete().eq('id', userId);
-            if (delErr) {
-                console.warn(`⚠️ [Subscription] Could not remove user ${userId} from company_users:`, delErr.message);
-            } else {
-                console.log(`✅ [Subscription] Removed user ${userId} from company_users table`);
+            // REMOVE from company_users entirely by id and email
+            await db.from('company_users').delete().eq('id', userId);
+            if (user.email) {
+                await db.from('company_users').delete().ilike('email', user.email);
             }
+            console.log(`✅ [Subscription] Purged user ${userId} (${user.email}) from company_users table`);
         } else {
-            // Update company_users table as well
+            // Update company_users table if user exists there
             const compUserUpdates = {
                 subscription_status: updates.subscription_status,
                 subscription_plan: updates.subscription_plan,
                 subscription_end_date: updates.subscription_end_date,
                 updated_at: now
             };
-            if (company_id !== undefined) compUserUpdates.company_id = company_id || null;
-            if (role) compUserUpdates.role = role;
-            if (account_type) compUserUpdates.account_type = account_type;
+            if (updates.company_id !== undefined) compUserUpdates.company_id = updates.company_id;
+            if (updates.role) compUserUpdates.role = updates.role;
+            if (updates.account_type) compUserUpdates.account_type = updates.account_type;
             if (subscription_status === 'active') {
                 compUserUpdates.approved = true;
                 compUserUpdates.email_verified = true;
@@ -254,8 +296,8 @@ router.put('/users/:id/subscription', authenticateToken, requireAdmin, async (re
         }
 
         // 4. Cascade to company if requested or if company_admin (skip if going individual)
-        const finalCompanyId = isTransitionToIndividual ? null : (company_id !== undefined ? company_id : user.company_id);
-        if (finalCompanyId && (apply_to_company || user.role === 'company_admin' || account_type === 'company')) {
+        const finalCompanyId = isTransitionToIndividual ? null : updates.company_id;
+        if (finalCompanyId && (apply_to_company || updates.role === 'company_admin' || updates.account_type === 'company')) {
             await db.from('companies').update({
                 subscription_status: updates.subscription_status,
                 subscription_plan: updates.subscription_plan,

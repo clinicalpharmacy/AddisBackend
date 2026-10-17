@@ -33,9 +33,10 @@ router.get('/me', authenticateToken, async (req, res) => {
         // Check company subscription if user has company_id
         // BUT respect individual account_type — don't re-attach detached users
         const dbAccountType = data.account_type || 'individual';
-        const isIndividual = dbAccountType === 'individual';
+        const isPlanIndividual = data.subscription_plan && data.subscription_plan.startsWith('individual');
+        const isIndividual = dbAccountType === 'individual' || isPlanIndividual;
 
-        let companyId = data.company_id;
+        let companyId = isIndividual ? null : data.company_id;
 
         // Only look up company_users if the DB record suggests a company association
         if (!companyId && !isIndividual) {
@@ -81,10 +82,14 @@ router.get('/me', authenticateToken, async (req, res) => {
             if (data.role !== 'company_admin' && data.role !== 'admin' && data.role !== 'superadmin') {
                 data.account_type = 'company_user';
             }
-        } else if (isIndividual) {
-            // Ensure individual users don't get company data attached
+        } else {
+            // Ensure individual or detached users don't get company data attached
             data.company_id = null;
             data.company = null;
+            data.account_type = 'individual';
+            if (data.role === 'company_admin') {
+                data.role = 'user';
+            }
         }
 
         // Remove sensitive fields
@@ -235,13 +240,13 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, error: errorMsg });
         }
 
-        // Check if user is company staff/employee
-        // BUT respect DB account_type — if admin set it to 'individual', skip company detection
-        const dbAccountType = user.account_type || 'individual';
-        const isExplicitlyIndividual = dbAccountType === 'individual' && !user.company_id;
+        // Check if user is individual account or has individual plan
+        const isPlanIndividual = user.subscription_plan && user.subscription_plan.startsWith('individual');
+        const isExplicitlyIndividual = user.account_type === 'individual' || isPlanIndividual;
 
-        let companyId = user.company_id;
+        let companyId = isExplicitlyIndividual ? null : user.company_id;
         if (!companyId && !isExplicitlyIndividual) {
+            // Check company_users table
             const { data: employeeRecord } = await db
                 .from('company_users')
                 .select('company_id')
@@ -250,11 +255,39 @@ router.post('/login', async (req, res) => {
 
             if (employeeRecord && employeeRecord.company_id) {
                 companyId = employeeRecord.company_id;
+            } else if (user.role === 'company_admin' || user.account_type === 'company') {
+                // Check if user is admin of any company by email or admin_id
+                const { data: compByEmail } = await db
+                    .from('companies')
+                    .select('id')
+                    .or(`admin_email.ilike.${cleanEmail},admin_id.eq.${user.id}`)
+                    .maybeSingle();
+                if (compByEmail && compByEmail.id) {
+                    companyId = compByEmail.id;
+                }
             }
         }
 
-        const isCompanyStaff = !isExplicitlyIndividual && (userType === 'company_user' || user.account_type === 'company_user' || !!companyId);
-        const isCompanyAdmin = !isExplicitlyIndividual && (user.role === 'company_admin' || user.account_type === 'company');
+        // If explicitly individual, ensure DB has clean company_id and role
+        if (isExplicitlyIndividual) {
+            companyId = null;
+            if (user.role === 'company_admin') {
+                user.role = 'user';
+                db.from('users').update({ company_id: null, role: 'user', account_type: 'individual' }).eq('id', user.id).then(() => {});
+            }
+        } else if (!companyId && user.role === 'company_admin') {
+            // If they are marked company_admin but have NO company anywhere in DB,
+            // prevent "No company associated with this account" crash by treating as individual
+            console.warn(`⚠️ [Login] User ${user.email} is company_admin with no company. Falling back to individual.`);
+            if (user.role !== 'admin' && user.role !== 'superadmin') {
+                user.role = 'user';
+            }
+            user.account_type = 'individual';
+            db.from('users').update({ company_id: null, role: user.role, account_type: 'individual' }).eq('id', user.id).then(() => {});
+        }
+
+        const isCompanyStaff = !isExplicitlyIndividual && (userType === 'company_user' || user.account_type === 'company_user' || (!!companyId && user.role !== 'company_admin'));
+        const isCompanyAdmin = !isExplicitlyIndividual && !!companyId && (user.role === 'company_admin' || user.account_type === 'company');
 
         // Check verification and approval - Skip for admin, superadmin
         if (user.role !== 'admin' && user.role !== 'superadmin') {
@@ -302,7 +335,7 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        const account_type_to_use = isCompanyStaff ? (isCompanyAdmin ? 'company' : 'company_user') : (user.account_type || 'individual');
+        const account_type_to_use = isCompanyAdmin ? 'company' : (isCompanyStaff ? 'company_user' : 'individual');
 
         let companyData = null;
         if (companyId) {
@@ -372,11 +405,13 @@ router.post('/login', async (req, res) => {
             console.error('Active session error:', err);
         }
 
+        const effectiveRole = (!companyId && user.role === 'company_admin') ? 'user' : (user.role || 'user');
+
         const tokenPayload = {
             userId: user.id,
             email: user.email,
             name: user.full_name,
-            role: user.role,
+            role: effectiveRole,
             approved: user.approved,
             account_type: account_type_to_use,
             user_type: userType,
@@ -426,7 +461,7 @@ router.post('/login', async (req, res) => {
             id: user.id,
             email: user.email,
             full_name: user.full_name,
-            role: user.role,
+            role: effectiveRole,
             approved: user.approved,
             account_type: account_type_to_use,
             institution: user.institution || (companyData ? companyData.company_name : ''),
@@ -840,7 +875,8 @@ router.get('/me', authenticateToken, async (req, res) => {
 
         // Determine actual account type from DB (not JWT)
         const dbAccountType = dbUser?.account_type || account_type || 'individual';
-        const isIndividualInDb = dbAccountType === 'individual';
+        const isPlanIndividual = dbUser?.subscription_plan && dbUser.subscription_plan.startsWith('individual');
+        const isIndividualInDb = dbAccountType === 'individual' || isPlanIndividual;
 
         if (!isIndividualInDb && (account_type === 'company_user' || req.user.user_type === 'company_user')) {
             const { data } = await supabase.from('company_users').select('*').eq('id', userId).maybeSingle();
@@ -862,6 +898,7 @@ router.get('/me', authenticateToken, async (req, res) => {
         if (isIndividualInDb) {
             user.account_type = 'individual';
             user.company_id = null;
+            if (user.role === 'company_admin') user.role = 'user';
         }
 
         // Robust company identification — ONLY for non-individual users
@@ -875,7 +912,22 @@ router.get('/me', authenticateToken, async (req, res) => {
             if (employeeRecord && employeeRecord.company_id) {
                 user.company_id = employeeRecord.company_id;
                 user.is_shared_account = true;
+            } else if (user.role === 'company_admin' || user.account_type === 'company') {
+                const { data: compFound } = await supabase
+                    .from('companies')
+                    .select('id')
+                    .or(`admin_email.ilike.${user.email.trim().toLowerCase()},admin_id.eq.${user.id}`)
+                    .maybeSingle();
+                if (compFound && compFound.id) {
+                    user.company_id = compFound.id;
+                }
             }
+        }
+
+        // Safety fallback: If still no company_id and marked company_admin, revert to individual
+        if (!user.company_id && user.role === 'company_admin') {
+            user.role = 'user';
+            user.account_type = 'individual';
         }
 
         let companyData = null;
@@ -908,12 +960,13 @@ router.get('/me', authenticateToken, async (req, res) => {
             }
         }
 
-        const isCompanyAdmin = !isIndividualInDb && (user.role === 'company_admin' || user.account_type === 'company');
+        const isCompanyAdmin = !isIndividualInDb && !!user.company_id && (user.role === 'company_admin' || user.account_type === 'company');
         const isEffectivelyCompanyUser = !isIndividualInDb && !isCompanyAdmin && (user.user_type === 'company_user' || !!user.company_id);
+        const effectiveRole = (!user.company_id && user.role === 'company_admin') ? 'user' : (isIndividualInDb && user.role === 'company_admin' ? 'user' : (user.role || 'user'));
 
         // Get patient limit info for the user
         const mockUser = {
-            role: user.role,
+            role: effectiveRole,
             account_type: isIndividualInDb ? 'individual' : (isCompanyAdmin ? 'company' : (user.account_type || (isEffectivelyCompanyUser ? 'company_user' : 'individual'))),
             company_id: isIndividualInDb ? null : user.company_id,
             userId: user.id
@@ -933,7 +986,7 @@ router.get('/me', authenticateToken, async (req, res) => {
             id: user.id,
             email: user.email,
             full_name: user.full_name,
-            role: user.role,
+            role: effectiveRole,
             account_type: isIndividualInDb ? 'individual' : (isCompanyAdmin ? 'company' : (isEffectivelyCompanyUser ? 'company_user' : (user.account_type || 'individual'))),
             phone: user.phone,
             approved: user.approved,
