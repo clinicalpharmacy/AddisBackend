@@ -236,8 +236,12 @@ router.post('/login', async (req, res) => {
         }
 
         // Check if user is company staff/employee
+        // BUT respect DB account_type — if admin set it to 'individual', skip company detection
+        const dbAccountType = user.account_type || 'individual';
+        const isExplicitlyIndividual = dbAccountType === 'individual' && !user.company_id;
+
         let companyId = user.company_id;
-        if (!companyId) {
+        if (!companyId && !isExplicitlyIndividual) {
             const { data: employeeRecord } = await db
                 .from('company_users')
                 .select('company_id')
@@ -249,8 +253,8 @@ router.post('/login', async (req, res) => {
             }
         }
 
-        const isCompanyStaff = userType === 'company_user' || user.account_type === 'company_user' || !!companyId;
-        const isCompanyAdmin = user.role === 'company_admin' || user.account_type === 'company';
+        const isCompanyStaff = !isExplicitlyIndividual && (userType === 'company_user' || user.account_type === 'company_user' || !!companyId);
+        const isCompanyAdmin = !isExplicitlyIndividual && (user.role === 'company_admin' || user.account_type === 'company');
 
         // Check verification and approval - Skip for admin, superadmin
         if (user.role !== 'admin' && user.role !== 'superadmin') {
