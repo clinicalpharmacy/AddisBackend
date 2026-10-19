@@ -12,97 +12,6 @@ import { EncryptionService } from '../utils/encryptionService.js';
 const router = express.Router();
 const JWT_SECRET = config.jwtSecret;
 
-// 👤 Get current user profile
-router.get('/me', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const db = supabaseAdmin || supabase;
-
-        // Check regular users
-        let { data, error } = await db.from('users').select('*').eq('id', userId).maybeSingle();
-
-        if (!data) {
-            const { data: cData, error: cErr } = await db.from('company_users').select('*').eq('id', userId).maybeSingle();
-            data = cData;
-            error = cErr;
-        }
-
-        if (error) throw error;
-        if (!data) return res.status(404).json({ success: false, error: 'Profile not found' });
-
-        // Check company subscription if user has company_id
-        // BUT respect individual account_type — don't re-attach detached users
-        const dbAccountType = data.account_type || 'individual';
-        const isPlanIndividual = data.subscription_plan && data.subscription_plan.startsWith('individual');
-        const isIndividual = dbAccountType === 'individual' || isPlanIndividual;
-
-        let companyId = isIndividual ? null : data.company_id;
-
-        // Only look up company_users if the DB record suggests a company association
-        if (!companyId && !isIndividual) {
-            companyId = req.user.company_id || null;
-            if (!companyId) {
-                const { data: compUser } = await db.from('company_users').select('company_id').eq('id', userId).maybeSingle();
-                if (compUser && compUser.company_id) companyId = compUser.company_id;
-            }
-        }
-
-        if (companyId && !isIndividual) {
-            data.company_id = companyId;
-            let { data: company } = await db.from('companies').select('*').eq('id', companyId).maybeSingle();
-            let hasCompanySubscription = company && company.subscription_status === 'active';
-
-            if (!hasCompanySubscription) {
-                const { data: activeSub } = await db
-                    .from('subscriptions')
-                    .select('*')
-                    .eq('company_id', companyId)
-                    .eq('status', 'active')
-                    .gt('end_date', new Date().toISOString())
-                    .order('end_date', { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
-
-                if (activeSub) {
-                    hasCompanySubscription = true;
-                    company = company || { id: companyId };
-                    company.subscription_status = 'active';
-                    company.subscription_plan = activeSub.plan_id;
-                    company.subscription_end_date = activeSub.end_date;
-                }
-            }
-
-            if (hasCompanySubscription) {
-                data.subscription_status = 'active';
-                data.subscription_plan = company.subscription_plan;
-                data.subscription_end_date = company.subscription_end_date;
-                data.has_subscription = true;
-            }
-            data.company = company;
-            if (data.role !== 'company_admin' && data.role !== 'admin' && data.role !== 'superadmin') {
-                data.account_type = 'company_user';
-            }
-        } else {
-            // Ensure individual or detached users don't get company data attached
-            data.company_id = null;
-            data.company = null;
-            data.account_type = 'individual';
-            if (data.role === 'company_admin') {
-                data.role = 'user';
-            }
-        }
-
-        // Remove sensitive fields
-        delete data.password_hash;
-        delete data.verification_token;
-
-        res.json({ success: true, user: data });
-    } catch (err) {
-        console.error('❌ [Auth/Me] error:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch profile' });
-    }
-});
-
 // 💰 Get user commission stats
 router.get('/commissions', authenticateToken, async (req, res) => {
     try {
@@ -995,8 +904,23 @@ router.get('/me', authenticateToken, async (req, res) => {
             region: user.region,
             company: isIndividualInDb ? null : companyData,
             company_id: isIndividualInDb ? null : user.company_id,
-            // Inherit active status from company if available
-            subscription_status: hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive'),
+            // Inherit active status from company if available & check expiration
+            subscription_status: (() => {
+                const rawStatus = hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive');
+                const endDate = hasCompanySubscription ? companyData?.subscription_end_date : user.subscription_end_date;
+                if (endDate && !isNaN(new Date(endDate).getTime()) && new Date(endDate) < new Date()) {
+                    return 'expired';
+                }
+                return rawStatus;
+            })(),
+            has_subscription: (() => {
+                const rawStatus = hasCompanySubscription ? 'active' : (user.subscription_status || 'inactive');
+                const endDate = hasCompanySubscription ? companyData?.subscription_end_date : user.subscription_end_date;
+                if (endDate && !isNaN(new Date(endDate).getTime()) && new Date(endDate) < new Date()) {
+                    return false;
+                }
+                return rawStatus === 'active';
+            })(),
             subscription_plan: hasCompanySubscription ? companyData.subscription_plan : (user.subscription_plan || null),
             subscription_end_date: hasCompanySubscription ? companyData.subscription_end_date : user.subscription_end_date,
             created_at: user.created_at,
