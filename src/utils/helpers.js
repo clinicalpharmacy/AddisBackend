@@ -78,7 +78,7 @@ export function getPlanDetails(planId) {
             name: 'Pharmacy / Drug Store Monthly',
             price: 1035, // 900 + 15% VAT
             interval: 'month',
-            user_limit: 5,
+            user_limit: 3,
             currency: 'ETB'
         },
         'pharmacy_yearly': {
@@ -93,7 +93,7 @@ export function getPlanDetails(planId) {
             name: 'Clinic / Specialty Center Monthly',
             price: 1035, // 900 + 15% VAT
             interval: 'month',
-            user_limit: 5,
+            user_limit: 3,
             currency: 'ETB'
         },
         'clinic_yearly': {
@@ -108,7 +108,7 @@ export function getPlanDetails(planId) {
             name: 'Health Center Monthly',
             price: 1035, // 900 + 15% VAT
             interval: 'month',
-            user_limit: 5,
+            user_limit: 3,
             currency: 'ETB'
         },
         'health_center_yearly': {
@@ -123,14 +123,14 @@ export function getPlanDetails(planId) {
             name: 'Hospital Monthly',
             price: 3450, // 3000 + 15% VAT
             interval: 'month',
-            user_limit: 20,
+            user_limit: 10,
             currency: 'ETB'
         },
         'hospital_yearly': {
             name: 'Hospital Yearly',
             price: 28750, // 25000 + 15% VAT
             interval: 'year',
-            user_limit: 20,
+            user_limit: 10,
             currency: 'ETB'
         },
         // ── Pharmacy School ────────────────────────────────────────────────
@@ -138,14 +138,29 @@ export function getPlanDetails(planId) {
             name: 'Pharmacy School Monthly',
             price: 3450, // 3000 + 15% VAT
             interval: 'month',
-            user_limit: 20,
+            user_limit: 10,
             currency: 'ETB'
         },
         'pharmacy_school_yearly': {
             name: 'Pharmacy School Yearly',
             price: 28750, // 25000 + 15% VAT
             interval: 'year',
-            user_limit: 20,
+            user_limit: 10,
+            currency: 'ETB'
+        },
+        // ── Other Company ─────────────────────────────────────────────────
+        'other_company_monthly': {
+            name: 'Other Company Monthly',
+            price: 1035, // 900 + 15% VAT
+            interval: 'month',
+            user_limit: 3,
+            currency: 'ETB'
+        },
+        'other_company_yearly': {
+            name: 'Other Company Yearly',
+            price: 10350, // 9000 + 15% VAT
+            interval: 'year',
+            user_limit: 5,
             currency: 'ETB'
         }
     };
