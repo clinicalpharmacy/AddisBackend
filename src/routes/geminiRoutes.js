@@ -1,14 +1,28 @@
 import express from "express";
-import { authenticateToken } from "../middleware/authMiddleware.js";
+import jwt from "jsonwebtoken";
+import { config } from "../config/env.js";
 import { analyzePatientCDSS } from "../services/geminiService.js";
 
 const router = express.Router();
+
+const optionalAuth = (req, res, next) => {
+    try {
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+        if (token) {
+            req.user = jwt.verify(token, config.jwtSecret);
+        }
+    } catch (e) {
+        // Proceed even if token is absent/invalid
+    }
+    next();
+};
 
 /**
  * Endpoint for AI-powered patient analysis (CDSS).
  * De-identifies patient data manually if necessary, or expects de-identified data from frontend.
  */
-router.post("/cdss-analysis", authenticateToken, async (req, res) => {
+router.post("/cdss-analysis", optionalAuth, async (req, res) => {
     try {
         const {
             age,
@@ -19,10 +33,6 @@ router.post("/cdss-analysis", authenticateToken, async (req, res) => {
             medications,
             vitals
         } = req.body;
-
-        // Restriction: Individual subscribers cannot access CDSS (optional, following system pattern)
-        const userAccountType = req.user.account_type;
-        const userRole = req.user.role;
 
         // De-identification (Ensure no patient names, identifiers are included)
         const patientData = {
