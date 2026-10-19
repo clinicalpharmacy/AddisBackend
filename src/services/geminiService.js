@@ -5,9 +5,9 @@ dotenv.config();
 
 /**
  * Gemini AI Service for Clinical Decision Support (CDSS).
- * Primary: gemini-2.5-flash (Latest stable/fast)
- * Fallback 1: gemini-2.5-flash-lite (Ultra low-cost)
- * Fallback 2: gemini-1.5-flash (Older stable)
+ * Primary: gemini-3.8-flash (Latest stable/fast)
+ * Fallback 1: gemini-3.7-flash (Previous stable)
+ * Fallback 2: gemini-3.5-flash (Older stable)
  */
 export async function analyzePatientCDSS(patientData, attempts = 0) {
     const key = process.env.GEMINI_API_KEY;
@@ -72,7 +72,7 @@ export async function analyzePatientCDSS(patientData, attempts = 0) {
         const data = error.response?.data;
 
         // If high demand (503) or rate limit (429) and we have a fallback model
-        if ((status === 503 || status === 429) && attempts < (models.length - 1)) {
+        if ((status === 503 || status === 429 || status === 404) && attempts < (models.length - 1)) {
             console.warn(`[Gemini AI Warning] ${model} unavailable (Status ${status}). Falling back to ${models[attempts + 1]}...`);
             return analyzePatientCDSS(patientData, attempts + 1);
         }
@@ -154,7 +154,7 @@ export async function analyzeQuickSafety(drugName, attempts = 0) {
         const status = error.response?.status;
         const data = error.response?.data;
 
-        if ((status === 503 || status === 429) && attempts < (models.length - 1)) {
+        if ((status === 503 || status === 429 || status === 404) && attempts < (models.length - 1)) {
             console.warn(`[Gemini AI Warning] ${model} unavailable (Status ${status}). Falling back...`);
             return analyzeQuickSafety(drugName, attempts + 1);
         }
