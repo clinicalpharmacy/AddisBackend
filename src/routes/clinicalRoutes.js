@@ -527,17 +527,6 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
         const { medication, medications: medList } = req.body;
         
-        // Support either a single medication string or an array of medications
-        let meds = [];
-        if (medList && Array.isArray(medList) && medList.length > 0) {
-            meds = medList.map(m => m.toLowerCase().trim());
-        } else if (medication) {
-            // Split by comma if user typed multiple in one string, just in case
-            meds = medication.split(',').map(m => m.toLowerCase().trim()).filter(Boolean);
-        }
-
-        if (meds.length === 0) return res.status(400).json({ success: false, error: 'Medication required' });
-
         const targetDb = supabaseAdmin || supabase;
         const { data: rules, error } = await targetDb
             .from('clinical_rules')
@@ -546,10 +535,85 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
         if (error) throw error;
 
+        // Collect all known medication names from clinical rules for robust parsing
+        const knownMedsSet = new Set();
+        const scanRuleMeds = (node) => {
+            if (!node) return;
+            if (node.all) node.all.forEach(scanRuleMeds);
+            if (node.any) node.any.forEach(scanRuleMeds);
+            if (node.fact === 'medications' && node.value) {
+                knownMedsSet.add(String(node.value).toLowerCase().trim());
+            }
+        };
+        (rules || []).forEach(r => scanRuleMeds(r.rule_condition));
+
+        // Intelligent medication parsing (handles comma, plus, semicolon, newline, and space-separated inputs)
+        const parseInputMeds = (inputList) => {
+            let rawMeds = [];
+            if (Array.isArray(inputList)) {
+                rawMeds = inputList;
+            } else if (typeof inputList === 'string') {
+                rawMeds = [inputList];
+            }
+
+            const parsed = [];
+            for (const item of rawMeds) {
+                const str = String(item).trim();
+                if (!str) continue;
+
+                // If contains comma, semicolon, plus, or newline, split by delimiters
+                if (/[,;+\n]/.test(str)) {
+                    str.split(/[,;+\n]+/).forEach(part => {
+                        const p = part.toLowerCase().trim();
+                        if (p) parsed.push(p);
+                    });
+                    continue;
+                }
+
+                // If contains spaces (e.g. "isotretinoin doxycycline warfarin aspirin" or "Ringer Lactate")
+                if (str.includes(' ')) {
+                    const lowerStr = str.toLowerCase();
+                    // If exact match for a known multi-word medication, keep as single entity
+                    if (knownMedsSet.has(lowerStr)) {
+                        parsed.push(lowerStr);
+                        continue;
+                    }
+
+                    // Check if multiple known drugs are contained within this string
+                    const foundKnown = [];
+                    const sortedKnown = Array.from(knownMedsSet).sort((a, b) => b.length - a.length);
+                    let remainder = lowerStr;
+                    for (const km of sortedKnown) {
+                        if (remainder.includes(km)) {
+                            foundKnown.push(km);
+                            remainder = remainder.replace(km, ' ');
+                        }
+                    }
+
+                    if (foundKnown.length >= 2) {
+                        foundKnown.forEach(m => parsed.push(m));
+                    } else {
+                        // Fallback: split by whitespace
+                        lowerStr.split(/\s+/).filter(Boolean).forEach(w => parsed.push(w));
+                    }
+                } else {
+                    parsed.push(str.toLowerCase());
+                }
+            }
+
+            return [...new Set(parsed)];
+        };
+
+        let meds = parseInputMeds(medList || medication);
+
+        if (meds.length === 0) return res.status(400).json({ success: false, error: 'Medication required' });
+
+        const formattedMedString = meds.map(m => m.charAt(0).toUpperCase() + m.slice(1)).join(', ');
+
         // Base safety profile structure
         const safetyProfile = {
-            medication: meds.join(', '),
-            general_overview: `Safety profile derived from clinical rules database for ${meds.join(', ')}.`,
+            medication: formattedMedString,
+            general_overview: `Safety profile derived from clinical rules database for ${formattedMedString}.`,
             categories: {
                 pregnancy: { status: 'Safe', details: 'No known contraindications in database.', medications: [] },
                 lactation: { status: 'Safe', details: 'No known contraindications in database.', medications: [] },
