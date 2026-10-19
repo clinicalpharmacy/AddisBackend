@@ -703,48 +703,96 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             return matchedMeds;
         };
 
-        // Helper: recursively evaluate rule condition against searched meds ONLY
-        // Returns the matched meds that made it true, or null if false
-        const evaluateConditionForQuickSafety = (node) => {
-            if (!node) return null;
-            
-            if (node.all) {
-                const matched = [];
-                for (const child of node.all) {
-                    const res = evaluateConditionForQuickSafety(child);
-                    if (!res) return null; // all must be true
-                    res.forEach(m => { if (!matched.includes(m)) matched.push(m); });
-                }
-                return matched;
+        // Helper: evaluate condition and return distinct medication combinations satisfying the rule
+        // Exactly mirrors RuleEngine getMatchedMedications so multi-drug rules (like Triple Whammy)
+        // produce combinations with the exact number of drugs defined by the rule (e.g. 3 drugs, not 4+)
+        const getMatchedMedicationCombinations = (condition, searchedMeds) => {
+            let parsedCondition = condition;
+            if (typeof condition === 'string') {
+                try { parsedCondition = JSON.parse(condition); } catch (e) { return []; }
             }
-            
-            if (node.any) {
-                const matched = [];
-                let anyTrue = false;
-                for (const child of node.any) {
-                    const res = evaluateConditionForQuickSafety(child);
-                    if (res) {
-                        anyTrue = true;
-                        res.forEach(m => { if (!matched.includes(m)) matched.push(m); });
+
+            const evaluate = (cond) => {
+                if (!cond) return null;
+
+                if (cond.all) {
+                    let allMatchSets = [ [] ];
+
+                    for (const child of cond.all) {
+                        const childRes = evaluate(child);
+                        if (!childRes) return null; // If any fails, 'all' fails
+                        
+                        let newMatchSets = [];
+                        for (const existingSet of allMatchSets) {
+                            for (const childSet of childRes) {
+                                const combined = [...existingSet];
+                                for (const item of childSet) {
+                                    if (!combined.includes(item)) {
+                                        combined.push(item);
+                                    }
+                                }
+                                newMatchSets.push(combined);
+                            }
+                        }
+                        allMatchSets = newMatchSets;
                     }
+                    return allMatchSets.length > 0 ? allMatchSets : null;
                 }
-                return anyTrue ? matched : null;
-            }
+
+                if (cond.any) {
+                    let anyMatchSets = [];
+                    let anyTrue = false;
+                    for (const child of cond.any) {
+                        const childRes = evaluate(child);
+                        if (childRes) {
+                            anyTrue = true;
+                            anyMatchSets.push(...childRes);
+                        }
+                    }
+                    return anyTrue ? anyMatchSets : null;
+                }
+
+                if (cond.fact === 'medications' && cond.operator === 'contains' && cond.value) {
+                    const ruleVal = String(cond.value).toLowerCase().trim();
+                    if (!ruleVal) return null;
+
+                    const matches = [];
+                    searchedMeds.forEach(m => {
+                        const searchMed = String(m).toLowerCase().trim();
+                        if (searchMed && (ruleVal.includes(searchMed) || searchMed.includes(ruleVal))) {
+                            matches.push(searchMed);
+                        }
+                    });
+
+                    if (matches.length > 0) {
+                        const uniqueMatches = [...new Set(matches)];
+                        return uniqueMatches.map(m => [m]);
+                    }
+                    return null;
+                }
+
+                // For non-medication facts (age, labs, etc.), assume true for quick safety check
+                return [ [] ];
+            };
+
+            const result = evaluate(parsedCondition);
+            if (!result) return [];
+
+            const uniqueFormattedCombinations = [];
+            const seenCombos = new Set();
             
-            if (node.fact === 'medications' && node.operator === 'contains' && node.value) {
-                const ruleVal = String(node.value).toLowerCase().trim();
-                if (!ruleVal) return null; // Avoid empty string matching everything
-                // Check if any of the searched meds matches this rule value
-                const matchingSearchMeds = meds.filter(m => {
-                    const searchMed = String(m).toLowerCase().trim();
-                    return searchMed && (ruleVal.includes(searchMed) || searchMed.includes(ruleVal));
-                });
-                return matchingSearchMeds.length > 0 ? matchingSearchMeds : null;
-            }
-            
-            // For other facts (age, labs, etc.), since quick safety only checks meds, we assume they pass
-            // so we don't accidentally block interactions that also depend on patient age (we show them as a warning)
-            return [];
+            result.forEach(combination => {
+                if (combination.length < 2) return;
+                const formattedCombo = combination.map(med => capitalizeMed(med)).sort();
+                
+                const comboKey = formattedCombo.join('|');
+                if (!seenCombos.has(comboKey)) {
+                    seenCombos.add(comboKey);
+                    uniqueFormattedCombinations.push(formattedCombo);
+                }
+            });
+
+            return uniqueFormattedCombinations;
         };
 
         // Helper: is an operator an "elderly" check? (age >= 60, age > 59, etc.)
@@ -826,8 +874,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             );
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
-            // Helper: Extract each interacting pair independently for rules like
-            // "Drug-Drug interactions associated with safety" and "IV Drug Incompatibility"
+            // Helper: Extract each interacting pair / combination independently for rules like
+            // "Drug-Drug interactions associated with safety", "Triple Whammy", and "IV Drug Incompatibility"
             const extractInteractingPairs = (targetRule) => {
                 const targetCond = targetRule.rule_condition;
                 if (!targetCond) return [];
@@ -836,31 +884,39 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 const seenKeys = new Set();
                 const ruleMsg = targetRule.rule_action?.message_client || targetRule.rule_action?.message || targetRule.rule_name;
 
-                // When condition is an "any" tree of pairwise blocks, evaluate each branch individually
-                const branches = Array.isArray(targetCond.any) ? targetCond.any : [targetCond];
-
-                for (const branch of branches) {
-                    const matched = evaluateConditionForQuickSafety(branch);
-                    if (matched && matched.length >= 2) {
-                        const sortedMeds = [...matched].map(m => m.toLowerCase().trim()).sort();
-                        const pairKey = sortedMeds.join('|');
-
-                        if (!seenKeys.has(pairKey)) {
-                            seenKeys.add(pairKey);
-
-                            const comboStr = branch.name || matched.map(m => capitalizeMed(m)).join(' + ');
+                // When condition is an "any" tree of pairwise blocks (e.g. pairwise safety interactions)
+                if (Array.isArray(targetCond.any) && targetCond.any.some(b => b.name || b.effect)) {
+                    for (const branch of targetCond.any) {
+                        const combos = getMatchedMedicationCombinations(branch, meds);
+                        for (const combo of combos) {
+                            const comboKey = combo.map(m => m.toLowerCase().trim()).sort().join('|');
+                            if (!seenKeys.has(comboKey)) {
+                                seenKeys.add(comboKey);
+                                const comboStr = branch.name || combo.join(' + ');
+                                let itemText = comboStr;
+                                let description = branch.effect || '';
+                                if (ruleMsg) {
+                                    description = description ? `${description} — ${ruleMsg}` : ruleMsg;
+                                }
+                                if (description) {
+                                    itemText += ` — ${description}`;
+                                }
+                                pairs.push(itemText);
+                            }
+                        }
+                    }
+                } else {
+                    // Multi-medication rules (like Triple Whammy, etc.)
+                    const combos = getMatchedMedicationCombinations(targetCond, meds);
+                    for (const combo of combos) {
+                        const comboKey = combo.map(m => m.toLowerCase().trim()).sort().join('|');
+                        if (!seenKeys.has(comboKey)) {
+                            seenKeys.add(comboKey);
+                            const comboStr = combo.join(' + ');
                             let itemText = comboStr;
-                            let description = '';
-                            if (branch.effect) {
-                                description = branch.effect;
-                            }
                             if (ruleMsg) {
-                                description = description ? `${description} — ${ruleMsg}` : ruleMsg;
+                                itemText += ` — ${ruleMsg}`;
                             }
-                            if (description) {
-                                itemText += ` — ${description}`;
-                            }
-
                             pairs.push(itemText);
                         }
                     }
