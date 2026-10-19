@@ -762,40 +762,71 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             );
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
 
+            // Helper: Extract each interacting pair independently for rules like
+            // "Drug-Drug interactions associated with safety" and "IV Drug Incompatibility"
+            const extractInteractingPairs = (targetRule) => {
+                const targetCond = targetRule.rule_condition;
+                if (!targetCond) return [];
+
+                const pairs = [];
+                const seenKeys = new Set();
+                const ruleMsg = targetRule.rule_action?.message_client || targetRule.rule_action?.message || targetRule.rule_name;
+
+                // When condition is an "any" tree of pairwise blocks, evaluate each branch individually
+                const branches = Array.isArray(targetCond.any) ? targetCond.any : [targetCond];
+
+                for (const branch of branches) {
+                    const matched = evaluateConditionForQuickSafety(branch);
+                    if (matched && matched.length >= 2) {
+                        const sortedMeds = [...matched].map(m => m.toLowerCase().trim()).sort();
+                        const pairKey = sortedMeds.join('|');
+
+                        if (!seenKeys.has(pairKey)) {
+                            seenKeys.add(pairKey);
+
+                            const comboStr = branch.name || matched.map(m => capitalizeMed(m)).join(' + ');
+                            let itemText = comboStr;
+                            let description = '';
+                            if (branch.effect) {
+                                description = branch.effect;
+                            }
+                            if (ruleMsg) {
+                                description = description ? `${description} — ${ruleMsg}` : ruleMsg;
+                            }
+                            if (description) {
+                                itemText += ` — ${description}`;
+                            }
+
+                            pairs.push(itemText);
+                        }
+                    }
+                }
+
+                return pairs;
+            };
+
             // ============================================
             // Handle Drug Interactions - ONLY for multiple drugs
             // ============================================
             if (isInteractionRule(rule) && meds.length >= 2) {
-                const matchedMeds = evaluateConditionForQuickSafety(cond);
-                if (matchedMeds && matchedMeds.length >= 2) {
-                    // It triggered! Sort to ensure consistent order (optional)
-                    const comboStr = matchedMeds.map(m => capitalizeMed(m)).join(' + ');
-                    let interactionText = comboStr;
-                    if (msg) {
-                        interactionText += ` — ${msg}`;
+                const pairs = extractInteractingPairs(rule);
+                pairs.forEach(pairText => {
+                    if (!safetyProfile.major_interactions.includes(pairText)) {
+                        safetyProfile.major_interactions.push(pairText);
                     }
-                    if (!safetyProfile.major_interactions.includes(interactionText)) {
-                        safetyProfile.major_interactions.push(interactionText);
-                    }
-                }
+                });
             }
 
             // ============================================
             // Handle IV Incompatibility - ONLY for multiple drugs
             // ============================================
             if (isIVIncompatibilityRule(rule) && meds.length >= 2) {
-                const matchedMeds = evaluateConditionForQuickSafety(cond);
-                if (matchedMeds && matchedMeds.length >= 2) {
-                    // It triggered!
-                    const comboStr = matchedMeds.map(m => capitalizeMed(m)).join(' + ');
-                    let incompatText = comboStr;
-                    if (msg) {
-                        incompatText += ` — ${msg}`;
+                const pairs = extractInteractingPairs(rule);
+                pairs.forEach(pairText => {
+                    if (!safetyProfile.iv_incompatibility.includes(pairText)) {
+                        safetyProfile.iv_incompatibility.push(pairText);
                     }
-                    if (!safetyProfile.iv_incompatibility.includes(incompatText)) {
-                        safetyProfile.iv_incompatibility.push(incompatText);
-                    }
-                }
+                });
             }
 
             // Check for pregnancy - show ONLY searched medications in brackets
