@@ -596,61 +596,6 @@ router.post('/companies/:id/approve', authenticateToken, requireAdmin, async (re
     }
 });
 
-// Subscriptions
-router.get('/subscriptions', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const db = supabaseAdmin || supabase;
-        if (!db) return res.status(503).json({ success: false, error: 'Database not configured' });
-
-        let { data, error } = await db
-            .from('subscriptions')
-            .select('*, users(full_name, email), companies(company_name, email)')
-            .order('created_at', { ascending: false });
-
-        if (error) {
-            // Fallback to simple query if foreign key join fails
-            const fallback = await db
-                .from('subscriptions')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            if (fallback.error) throw fallback.error;
-            data = fallback.data || [];
-
-            if (data.length > 0) {
-                const userIds = [...new Set(data.map(s => s.user_id).filter(Boolean))];
-                const companyIds = [...new Set(data.map(s => s.company_id).filter(Boolean))];
-
-                let userMap = {};
-                let companyMap = {};
-
-                if (userIds.length > 0) {
-                    const { data: uData } = await db.from('users').select('id, full_name, email').in('id', userIds);
-                    if (uData) uData.forEach(u => { userMap[u.id] = u; });
-                }
-                if (companyIds.length > 0) {
-                    const { data: cData } = await db.from('companies').select('id, company_name, email').in('id', companyIds);
-                    if (cData) cData.forEach(c => { companyMap[c.id] = c; });
-                }
-
-                data = data.map(sub => ({
-                    ...sub,
-                    users: sub.user_id ? userMap[sub.user_id] : null,
-                    companies: sub.company_id ? companyMap[sub.company_id] : null
-                }));
-            }
-        }
-
-        res.json({
-            success: true,
-            subscriptions: data || []
-        });
-    } catch (e) {
-        console.error('Error fetching admin subscriptions:', e);
-        res.status(500).json({ success: false, error: 'Failed to fetch subscriptions', details: e.message });
-    }
-});
-
 // Recent Activities
 router.get('/recent-activities', authenticateToken, requireAdmin, async (req, res) => {
     try {
