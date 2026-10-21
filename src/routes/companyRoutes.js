@@ -11,31 +11,57 @@ const db = supabaseAdmin || supabase;
 
 // --- User limits (mirrors src/utils/userLimits.js) ---
 const USER_LIMITS = {
-    pharmacy:        { monthly: 3,  yearly: 5  },
-    clinic:          { monthly: 3,  yearly: 5  },
+    pharmacy:        { monthly: 3, yearly: 5  },
+    clinic:          { monthly: 3, yearly: 5  },
     hospital:        { monthly: 10, yearly: 10 },
     pharmacy_school: { monthly: 10, yearly: 10 },
-    other_company:   { monthly: 3,  yearly: 5  },
+    other_company:   { monthly: 3, yearly: 5  },
 };
 
 // Signup / DB aliases → canonical keys in USER_LIMITS
 const COMPANY_TYPE_ALIASES = {
     pharmacy: 'pharmacy',
     'pharmacy/drug store': 'pharmacy',
+    'pharmacy / drug store': 'pharmacy',
     'drug store': 'pharmacy',
     clinic: 'clinic',
     'clinic/specialty center/health center': 'clinic',
+    'clinic / specialty center / health center': 'clinic',
     hospital: 'hospital',
     pharmacy_school: 'pharmacy_school',
-    pharmaceutical: 'pharmacy_school',      // what Signup.jsx sends for Pharmacy School
+    pharmaceutical: 'pharmacy_school',
     'pharmacy school': 'pharmacy_school',
+    'pharmacy school / school': 'pharmacy_school',
     other_company: 'other_company',
+    'other company': 'other_company',
 };
 
 const normalizeCompanyType = (raw) => {
-    if (!raw) return '';
+    if (raw === null || raw === undefined || raw === '') return '';
+
     const key = String(raw).toLowerCase().trim();
-    return COMPANY_TYPE_ALIASES[key] || key.replace(/\s+/g, '_');
+    const normalizedKey = key
+        .replace(/[_/\\-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (COMPANY_TYPE_ALIASES[key]) return COMPANY_TYPE_ALIASES[key];
+    if (COMPANY_TYPE_ALIASES[normalizedKey]) return COMPANY_TYPE_ALIASES[normalizedKey];
+
+    return normalizedKey.replace(/\s+/g, '_');
+};
+
+const inferCompanyTypeFromPlan = (rawPlan) => {
+    if (!rawPlan) return '';
+    const s = String(rawPlan).toLowerCase();
+
+    if (s.includes('pharmacy') || s.includes('drug')) return 'pharmacy';
+    if (s.includes('clinic') || s.includes('health center') || s.includes('specialty')) return 'clinic';
+    if (s.includes('hospital')) return 'hospital';
+    if (s.includes('school')) return 'pharmacy_school';
+    if (s.includes('other') || s.includes('company')) return 'other_company';
+
+    return '';
 };
 
 /**
@@ -53,15 +79,19 @@ const normalizePlanInterval = (raw) => {
 };
 
 const getMaxUsers = (companyType, plan) => {
-    const type = normalizeCompanyType(companyType);
+    const type = normalizeCompanyType(companyType) || inferCompanyTypeFromPlan(plan);
     const interval = normalizePlanInterval(plan);
     const limits = USER_LIMITS[type];
     if (!limits) return 0;
-    return limits[interval];
+    return limits[interval] ?? limits.monthly ?? 0;
 };
 
 // Middleware to ensure company admin
 const requireCompanyAdmin = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+
     if (req.user.role !== 'company_admin' && req.user.role !== 'admin') {
         return res.status(403).json({ success: false, error: 'Company admin access required' });
     }
