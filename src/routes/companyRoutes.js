@@ -18,12 +18,46 @@ const USER_LIMITS = {
     other_company:   { monthly: 3,  yearly: 5  },
 };
 
+// Signup / DB aliases → canonical keys in USER_LIMITS
+const COMPANY_TYPE_ALIASES = {
+    pharmacy: 'pharmacy',
+    'pharmacy/drug store': 'pharmacy',
+    'drug store': 'pharmacy',
+    clinic: 'clinic',
+    'clinic/specialty center/health center': 'clinic',
+    hospital: 'hospital',
+    pharmacy_school: 'pharmacy_school',
+    pharmaceutical: 'pharmacy_school',      // what Signup.jsx sends for Pharmacy School
+    'pharmacy school': 'pharmacy_school',
+    other_company: 'other_company',
+};
+
+const normalizeCompanyType = (raw) => {
+    if (!raw) return '';
+    const key = String(raw).toLowerCase().trim();
+    return COMPANY_TYPE_ALIASES[key] || key.replace(/\s+/g, '_');
+};
+
+/**
+ * Accepts EITHER:
+ *   - a billing interval: 'monthly' | 'yearly'
+ *   - a plan id:          'pharmacy_monthly', 'clinic_yearly', ...
+ *   - a plan name:        'Pharmacy / Drug Store Monthly'
+ */
+const normalizePlanInterval = (raw) => {
+    if (!raw) return 'monthly';
+    const s = String(raw).toLowerCase().trim();
+    if (s.includes('yearly') || s.includes('annual') || s === 'year') return 'yearly';
+    if (s.includes('monthly') || s === 'month') return 'monthly';
+    return 'monthly'; // safe default
+};
+
 const getMaxUsers = (companyType, plan) => {
-    const type = (companyType || '').toLowerCase().trim();
-    const normalizedPlan = (plan || 'monthly').toLowerCase().trim();
+    const type = normalizeCompanyType(companyType);
+    const interval = normalizePlanInterval(plan);
     const limits = USER_LIMITS[type];
     if (!limits) return 0;
-    return normalizedPlan === 'yearly' ? limits.yearly : limits.monthly;
+    return limits[interval];
 };
 
 // Middleware to ensure company admin
@@ -96,11 +130,25 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
 
         // --- USER LIMIT CHECK (authoritative) ---
         const companyType = company?.company_type || company?.type;
-        const plan =
-            company?.subscription_plan ||
-            company?.plan ||
-            'monthly';
-        const maxUsers = getMaxUsers(companyType, plan);
+
+        // Prefer the active subscription's plan_id as the source of truth,
+        // because `companies.subscription_plan` may be null or a bare interval.
+        let rawPlan = company?.subscription_plan || company?.plan || '';
+
+        if (!rawPlan || !normalizeCompanyType(companyType)) {
+            const { data: activeSub } = await db
+                .from('subscriptions')
+                .select('plan_id, status, end_date')
+                .eq('company_id', admin.company_id)
+                .eq('status', 'active')
+                .gt('end_date', new Date().toISOString())
+                .order('end_date', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (activeSub?.plan_id) rawPlan = activeSub.plan_id;
+        }
+
+        const maxUsers = getMaxUsers(companyType, rawPlan);
 
         const { count: currentCount, error: countErr } = await db
             .from('company_users')
@@ -112,16 +160,20 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
         if (maxUsers === 0) {
             return res.status(403).json({
                 success: false,
-                error: 'Your company type does not allow adding users. Please contact support.',
+                error: `Your company type ("${companyType || 'unknown'}") or plan ("${rawPlan || 'unknown'}") is not recognized. Please contact support.`,
+                company_type: companyType,
+                plan: rawPlan,
             });
         }
 
         if ((currentCount || 0) >= maxUsers) {
             return res.status(403).json({
                 success: false,
-                error: `User limit reached: your ${plan} ${companyType || 'company'} plan allows a maximum of ${maxUsers} user(s).`,
+                error: `User limit reached: your ${rawPlan || 'monthly'} plan allows a maximum of ${maxUsers} user(s).`,
                 limit: maxUsers,
                 current: currentCount || 0,
+                company_type: companyType,
+                plan: rawPlan,
             });
         }
 
