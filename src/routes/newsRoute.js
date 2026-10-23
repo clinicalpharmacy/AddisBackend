@@ -55,7 +55,7 @@ function validateNewsPayload(body, { partial = false } = {}) {
  *   ?limit=50        max rows
  *   ?offset=0        pagination offset
  */
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', async (req, res) => { ... });
     try {
         const client = db();
         const { category, search, limit = 50, offset = 0 } = req.query;
@@ -84,7 +84,7 @@ router.get('/', authenticateToken, async (req, res) => {
  * GET /api/news/:id
  * Get a single news item by ID (increments view count).
  */
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', async (req, res) => { ... });
     try {
         const client = db();
         const { id } = req.params;
