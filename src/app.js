@@ -27,6 +27,7 @@ import accessRoutes from './routes/accessRoutes.js';
 import examRoutes from './routes/examRoutes.js';
 import studentExamRoutes from './routes/studentExamRoutes.js';
 import vacancyRoutes from './routes/vacancyRoutes.js';
+import newsRoute from './routes/newsRoute.js';
 
 const app = express();
 
@@ -96,6 +97,7 @@ app.use('/api/access', accessRoutes);
 app.use('/api/admin/exams', examRoutes);
 app.use('/api/exams', studentExamRoutes);
 app.use('/api', vacancyRoutes);
+app.use('/api', newsRoute);
 
 // 404 Handler
 app.use((req, res) => {
