@@ -84,6 +84,88 @@ router.get('/', async (req, res) => {
     }
 });
 
+// ==========================================
+// 📊 ADMIN-ONLY LISTING (includes drafts)
+// ⚠️ MUST be before /:id to avoid being caught by the wildcard
+// ==========================================
+
+/**
+ * GET /api/news/admin/all
+ * Admin list — includes unpublished/draft items.
+ */
+router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const client = db();
+        const { limit = 100, offset = 0 } = req.query;
+
+        const { data, error, count } = await client
+            .from('news')
+            .select('*', { count: 'exact' })
+            .order('created_at', { ascending: false })
+            .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+        if (error) throw error;
+        res.json({ success: true, news: data || [], count: count || 0 });
+    } catch (error) {
+        console.error('❌ [News/AdminList] error:', error.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch news' });
+    }
+});
+
+/**
+ * POST /api/news/:id/toggle-publish
+ * Publish / unpublish a news item.
+ * ⚠️ MUST be before generic /:id routes
+ */
+router.post('/:id/toggle-publish', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const client = db();
+        const { id } = req.params;
+
+        const { data: item, error: fetchErr } = await client
+            .from('news')
+            .select('*')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (fetchErr || !item) {
+            return res.status(404).json({ success: false, error: 'News item not found' });
+        }
+
+        const newStatus = item.published !== undefined ? !item.published : false;
+
+        let { data: updated, error } = await client
+            .from('news')
+            .update({ published: newStatus, updated_at: new Date().toISOString() })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
+            return res.status(400).json({
+                success: false,
+                error: "The 'published' column does not exist in your database yet. Please run the ADD_NEWS_COLUMNS.sql script in your Supabase SQL editor to enable publishing toggle."
+            });
+        }
+
+        if (error) throw error;
+
+        res.json({
+            success: true,
+            message: newStatus ? 'News published' : 'News unpublished',
+            published: newStatus,
+            news: updated
+        });
+    } catch (error) {
+        console.error('❌ [News/TogglePublish] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to toggle publish status' });
+    }
+});
+
+// ==========================================
+// 📖 SINGLE ITEM (wildcard /:id — must come AFTER specific routes)
+// ==========================================
+
 /**
  * GET /api/news/:id
  * Get a single news item by ID (increments view count).
@@ -272,82 +354,6 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
     } catch (error) {
         console.error('❌ [News/Delete] error:', error.message);
         res.status(500).json({ success: false, error: 'Failed to delete news item' });
-    }
-});
-
-// ==========================================
-// 📊 ADMIN-ONLY LISTING (includes drafts)
-// ==========================================
-
-/**
- * GET /api/news/admin/all
- * Admin list — includes unpublished/draft items.
- */
-router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const client = db();
-        const { limit = 100, offset = 0 } = req.query;
-
-        const { data, error, count } = await client
-            .from('news')
-            .select('*', { count: 'exact' })
-            .order('created_at', { ascending: false })
-            .range(Number(offset), Number(offset) + Number(limit) - 1);
-
-        if (error) throw error;
-        res.json({ success: true, news: data || [], count: count || 0 });
-    } catch (error) {
-        console.error('❌ [News/AdminList] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch news' });
-    }
-});
-
-/**
- * POST /api/news/:id/toggle-publish
- * Publish / unpublish a news item.
- */
-router.post('/:id/toggle-publish', authenticateToken, requireAdmin, async (req, res) => {
-    try {
-        const client = db();
-        const { id } = req.params;
-
-        const { data: item, error: fetchErr } = await client
-            .from('news')
-            .select('*')
-            .eq('id', id)
-            .maybeSingle();
-
-        if (fetchErr || !item) {
-            return res.status(404).json({ success: false, error: 'News item not found' });
-        }
-
-        const newStatus = item.published !== undefined ? !item.published : false;
-
-        let { data: updated, error } = await client
-            .from('news')
-            .update({ published: newStatus, updated_at: new Date().toISOString() })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
-            return res.status(400).json({
-                success: false,
-                error: "The 'published' column does not exist in your database yet. Please run the ADD_NEWS_COLUMNS.sql script in your Supabase SQL editor to enable publishing toggle."
-            });
-        }
-
-        if (error) throw error;
-
-        res.json({
-            success: true,
-            message: newStatus ? 'News published' : 'News unpublished',
-            published: newStatus,
-            news: updated
-        });
-    } catch (error) {
-        console.error('❌ [News/TogglePublish] error:', error.message || error);
-        res.status(500).json({ success: false, error: error.message || 'Failed to toggle publish status' });
     }
 });
 
