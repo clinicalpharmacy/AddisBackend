@@ -62,8 +62,7 @@ router.get('/', async (req, res) => {
 
         let query = client
             .from('news')
-            .select('id, title, content, reference, category, image_url, author_name, published, views, created_at, updated_at', { count: 'exact' })
-            .eq('published', true)
+            .select('*', { count: 'exact' })
             .order('created_at', { ascending: false })
             .range(Number(offset), Number(offset) + Number(limit) - 1);
 
@@ -73,10 +72,15 @@ router.get('/', async (req, res) => {
         const { data, error, count } = await query;
         if (error) throw error;
 
-        res.json({ success: true, news: data || [], count: count || 0 });
+        // If published column exists, only show published; otherwise show all
+        const visibleNews = (data || []).filter(
+            item => item.published === undefined || item.published === null || item.published === true
+        );
+
+        res.json({ success: true, news: visibleNews, count: count || visibleNews.length });
     } catch (error) {
-        console.error('❌ [News/List] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch news' });
+        console.error('❌ [News/List] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to fetch news' });
     }
 });
 
@@ -109,8 +113,8 @@ router.get('/:id', async (req, res) => {
 
         res.json({ success: true, news: item });
     } catch (error) {
-        console.error('❌ [News/Get] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to fetch news item' });
+        console.error('❌ [News/Get] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to fetch news item' });
     }
 });
 
@@ -132,31 +136,49 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
 
         const { title, content, reference, category, image_url, published } = req.body;
 
-        const { data: news, error } = await client
+        const baseRow = {
+            title: title.trim(),
+            content: content.trim(),
+            reference: reference ? reference.trim() : '',
+            category: category || 'general',
+            image_url: image_url || null,
+            author_name: req.user?.full_name || req.user?.email || 'Admin',
+            views: 0
+        };
+
+        const fullRow = {
+            ...baseRow,
+            author_id: req.user?.userId || req.user?.id || null,
+            published: published !== undefined ? !!published : true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        let { data: news, error } = await client
             .from('news')
-            .insert({
-                title: title.trim(),
-                content: content.trim(),
-                reference: reference.trim(),
-                category: category || 'general',
-                image_url: image_url || null,
-                published: published !== undefined ? !!published : true,
-                author_id: req.user.userId || req.user.id,
-                author_name: req.user.full_name || req.user.email,
-                views: 0,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            })
+            .insert(fullRow)
             .select()
             .single();
 
+        // If optional columns (author_id, published, updated_at) are not in the table schema, fallback to base columns
+        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
+            console.warn('⚠️ [News/Create] Falling back to base columns:', error.message);
+            const retry = await client
+                .from('news')
+                .insert(baseRow)
+                .select()
+                .single();
+            news = retry.data;
+            error = retry.error;
+        }
+
         if (error) throw error;
 
-        console.log(`📰 [News] Created "${news.title}" by ${req.user.email}`);
+        console.log(`📰 [News] Created "${news.title}" by ${req.user?.email || 'Admin'}`);
         res.status(201).json({ success: true, news });
     } catch (error) {
-        console.error('❌ [News/Create] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to create news item' });
+        console.error('❌ [News/Create] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to create news item' });
     }
 });
 
@@ -175,36 +197,51 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         }
 
         // Whitelist updatable fields
-        const updates = {};
-        ['title', 'content', 'reference', 'category', 'image_url', 'published'].forEach((key) => {
-            if (req.body[key] !== undefined) updates[key] = req.body[key];
+        const baseUpdates = {};
+        ['title', 'content', 'reference', 'category', 'image_url'].forEach((key) => {
+            if (req.body[key] !== undefined) baseUpdates[key] = req.body[key];
         });
 
-        if (updates.title) updates.title = updates.title.trim();
-        if (updates.content) updates.content = updates.content.trim();
-        if (updates.reference) updates.reference = updates.reference.trim();
-        if (updates.published !== undefined) updates.published = !!updates.published;
-        updates.updated_at = new Date().toISOString();
+        if (baseUpdates.title) baseUpdates.title = baseUpdates.title.trim();
+        if (baseUpdates.content) baseUpdates.content = baseUpdates.content.trim();
+        if (baseUpdates.reference !== undefined) baseUpdates.reference = baseUpdates.reference ? baseUpdates.reference.trim() : '';
 
-        if (Object.keys(updates).length === 1) {
+        const fullUpdates = { ...baseUpdates };
+        if (req.body.published !== undefined) fullUpdates.published = !!req.body.published;
+        fullUpdates.updated_at = new Date().toISOString();
+
+        if (Object.keys(fullUpdates).length === 0) {
             return res.status(400).json({ success: false, error: 'No fields to update' });
         }
 
-        const { data: news, error } = await client
+        let { data: news, error } = await client
             .from('news')
-            .update(updates)
+            .update(fullUpdates)
             .eq('id', id)
             .select()
             .single();
 
+        // If optional columns fail, fallback to base fields
+        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
+            console.warn('⚠️ [News/Update] Falling back to base update fields:', error.message);
+            const retry = await client
+                .from('news')
+                .update(baseUpdates)
+                .eq('id', id)
+                .select()
+                .single();
+            news = retry.data;
+            error = retry.error;
+        }
+
         if (error || !news) {
-            return res.status(404).json({ success: false, error: 'News item not found' });
+            return res.status(404).json({ success: false, error: error?.message || 'News item not found' });
         }
 
         res.json({ success: true, message: 'News updated', news });
     } catch (error) {
-        console.error('❌ [News/Update] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to update news item' });
+        console.error('❌ [News/Update] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to update news item' });
     }
 });
 
@@ -276,7 +313,7 @@ router.post('/:id/toggle-publish', authenticateToken, requireAdmin, async (req, 
 
         const { data: item, error: fetchErr } = await client
             .from('news')
-            .select('published')
+            .select('*')
             .eq('id', id)
             .maybeSingle();
 
@@ -284,14 +321,21 @@ router.post('/:id/toggle-publish', authenticateToken, requireAdmin, async (req, 
             return res.status(404).json({ success: false, error: 'News item not found' });
         }
 
-        const newStatus = !item.published;
+        const newStatus = item.published !== undefined ? !item.published : false;
 
-        const { data: updated, error } = await client
+        let { data: updated, error } = await client
             .from('news')
             .update({ published: newStatus, updated_at: new Date().toISOString() })
             .eq('id', id)
             .select()
             .single();
+
+        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
+            return res.status(400).json({
+                success: false,
+                error: "The 'published' column does not exist in your database yet. Please run the ADD_NEWS_COLUMNS.sql script in your Supabase SQL editor to enable publishing toggle."
+            });
+        }
 
         if (error) throw error;
 
@@ -302,8 +346,8 @@ router.post('/:id/toggle-publish', authenticateToken, requireAdmin, async (req, 
             news: updated
         });
     } catch (error) {
-        console.error('❌ [News/TogglePublish] error:', error.message);
-        res.status(500).json({ success: false, error: 'Failed to toggle publish status' });
+        console.error('❌ [News/TogglePublish] error:', error.message || error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to toggle publish status' });
     }
 });
 
