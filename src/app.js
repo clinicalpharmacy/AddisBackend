@@ -99,7 +99,7 @@ app.use('/api/access', accessRoutes);
 app.use('/api/admin/exams', examRoutes);
 app.use('/api/exams', studentExamRoutes);
 app.use('/api', vacancyRoutes);
-app.use('/api', newsRoute);
+app.use('/api/news', newsRoute);
 app.use('/api/dailymed', dailymedRoutes);
 app.use('/api/reminders', reminderRoutes);
 
