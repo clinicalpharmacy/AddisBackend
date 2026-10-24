@@ -228,9 +228,12 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
             views: 0
         };
 
+        const rawUserId = req.user?.userId || req.user?.id;
+        const isValidUUID = typeof rawUserId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawUserId);
+
         const fullRow = {
             ...baseRow,
-            author_id: req.user?.userId || req.user?.id || null,
+            author_id: isValidUUID ? rawUserId : null,
             published: published !== undefined ? !!published : true,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -242,16 +245,18 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
             .select()
             .single();
 
-        // If optional columns (author_id, published, updated_at) are not in the table schema, fallback to base columns
-        if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.code === '42703')) {
-            console.warn('⚠️ [News/Create] Falling back to base columns:', error.message);
+        // If optional columns or constraints fail, fallback to base columns
+        if (error) {
+            console.warn('⚠️ [News/Create] Initial insert failed, falling back to base columns:', error.message || error);
             const retry = await client
                 .from('news')
                 .insert(baseRow)
                 .select()
                 .single();
-            news = retry.data;
-            error = retry.error;
+            if (!retry.error) {
+                news = retry.data;
+                error = null;
+            }
         }
 
         if (error) throw error;
