@@ -85,14 +85,14 @@ export async function sendPushToUser(userId, payload) {
 export async function sendTestNotification(userId) {
     const payload = {
         title: '🔔 Reminders are Active!',
-        body: 'Your device is successfully connected. You will receive medication alerts on time.',
+        body: 'Your device is verified and connected to receive scheduled medication alerts.',
         icon: '/pwa-192x192.png',
         badge: '/pwa-192x192.png',
-        tag: 'test-reminder',
+        tag: 'device-verification',
         renotify: true,
         data: {
             url: '/reminders',
-            type: 'test'
+            type: 'verification'
         }
     };
 
