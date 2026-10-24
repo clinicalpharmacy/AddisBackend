@@ -29,6 +29,7 @@ import studentExamRoutes from './routes/studentExamRoutes.js';
 import vacancyRoutes from './routes/vacancyRoutes.js';
 import dailymedRoutes from './routes/dailymedRoutes.js';
 import reminderRoutes from './routes/reminderRoutes.js';
+import newsRoute from './routes/newsRoute.js';
 
 const app = express();
 
@@ -98,6 +99,7 @@ app.use('/api/access', accessRoutes);
 app.use('/api/admin/exams', examRoutes);
 app.use('/api/exams', studentExamRoutes);
 app.use('/api', vacancyRoutes);
+app.use('/api', newsRoute);
 app.use('/api/dailymed', dailymedRoutes);
 app.use('/api/reminders', reminderRoutes);
 

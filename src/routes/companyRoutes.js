@@ -9,8 +9,89 @@ import { isValidEmail } from '../utils/helpers.js';
 const router = express.Router();
 const db = supabaseAdmin || supabase;
 
+// --- User limits (mirrors src/utils/userLimits.js) ---
+const USER_LIMITS = {
+    pharmacy:        { monthly: 3, yearly: 5  },
+    clinic:          { monthly: 3, yearly: 5  },
+    hospital:        { monthly: 10, yearly: 10 },
+    pharmacy_school: { monthly: 10, yearly: 10 },
+    other_company:   { monthly: 3, yearly: 5  },
+};
+
+// Signup / DB aliases → canonical keys in USER_LIMITS
+const COMPANY_TYPE_ALIASES = {
+    pharmacy: 'pharmacy',
+    'pharmacy/drug store': 'pharmacy',
+    'pharmacy / drug store': 'pharmacy',
+    'drug store': 'pharmacy',
+    clinic: 'clinic',
+    'clinic/specialty center/health center': 'clinic',
+    'clinic / specialty center / health center': 'clinic',
+    hospital: 'hospital',
+    pharmacy_school: 'pharmacy_school',
+    pharmaceutical: 'pharmacy_school',
+    'pharmacy school': 'pharmacy_school',
+    'pharmacy school / school': 'pharmacy_school',
+    other_company: 'other_company',
+    'other company': 'other_company',
+};
+
+const normalizeCompanyType = (raw) => {
+    if (raw === null || raw === undefined || raw === '') return '';
+
+    const key = String(raw).toLowerCase().trim();
+    const normalizedKey = key
+        .replace(/[_/\\-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (COMPANY_TYPE_ALIASES[key]) return COMPANY_TYPE_ALIASES[key];
+    if (COMPANY_TYPE_ALIASES[normalizedKey]) return COMPANY_TYPE_ALIASES[normalizedKey];
+
+    return normalizedKey.replace(/\s+/g, '_');
+};
+
+const inferCompanyTypeFromPlan = (rawPlan) => {
+    if (!rawPlan) return '';
+    const s = String(rawPlan).toLowerCase();
+
+    if (s.includes('pharmacy') || s.includes('drug')) return 'pharmacy';
+    if (s.includes('clinic') || s.includes('health center') || s.includes('specialty')) return 'clinic';
+    if (s.includes('hospital')) return 'hospital';
+    if (s.includes('school')) return 'pharmacy_school';
+    if (s.includes('other') || s.includes('company')) return 'other_company';
+
+    return '';
+};
+
+/**
+ * Accepts EITHER:
+ *   - a billing interval: 'monthly' | 'yearly'
+ *   - a plan id:          'pharmacy_monthly', 'clinic_yearly', ...
+ *   - a plan name:        'Pharmacy / Drug Store Monthly'
+ */
+const normalizePlanInterval = (raw) => {
+    if (!raw) return 'monthly';
+    const s = String(raw).toLowerCase().trim();
+    if (s.includes('yearly') || s.includes('annual') || s === 'year') return 'yearly';
+    if (s.includes('monthly') || s === 'month') return 'monthly';
+    return 'monthly'; // safe default
+};
+
+const getMaxUsers = (companyType, plan) => {
+    const type = normalizeCompanyType(companyType) || inferCompanyTypeFromPlan(plan);
+    const interval = normalizePlanInterval(plan);
+    const limits = USER_LIMITS[type];
+    if (!limits) return 0;
+    return limits[interval] ?? limits.monthly ?? 0;
+};
+
 // Middleware to ensure company admin
 const requireCompanyAdmin = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+
     if (req.user.role !== 'company_admin' && req.user.role !== 'admin') {
         return res.status(403).json({ success: false, error: 'Company admin access required' });
     }
@@ -77,6 +158,55 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
             }
         }
 
+        // --- USER LIMIT CHECK (authoritative) ---
+        const companyType = company?.company_type || company?.type;
+
+        // Prefer the active subscription's plan_id as the source of truth,
+        // because `companies.subscription_plan` may be null or a bare interval.
+        let rawPlan = company?.subscription_plan || company?.plan || '';
+
+        if (!rawPlan || !normalizeCompanyType(companyType)) {
+            const { data: activeSub } = await db
+                .from('subscriptions')
+                .select('plan_id, status, end_date')
+                .eq('company_id', admin.company_id)
+                .eq('status', 'active')
+                .gt('end_date', new Date().toISOString())
+                .order('end_date', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (activeSub?.plan_id) rawPlan = activeSub.plan_id;
+        }
+
+        const maxUsers = getMaxUsers(companyType, rawPlan);
+
+        const { count: currentCount, error: countErr } = await db
+            .from('company_users')
+            .select('id', { count: 'exact', head: true })
+            .eq('company_id', admin.company_id);
+
+        if (countErr) throw countErr;
+
+        if (maxUsers === 0) {
+            return res.status(403).json({
+                success: false,
+                error: `Your company type ("${companyType || 'unknown'}") or plan ("${rawPlan || 'unknown'}") is not recognized. Please contact support.`,
+                company_type: companyType,
+                plan: rawPlan,
+            });
+        }
+
+        if ((currentCount || 0) >= maxUsers) {
+            return res.status(403).json({
+                success: false,
+                error: `User limit reached: your ${rawPlan || 'monthly'} plan allows a maximum of ${maxUsers} user(s).`,
+                limit: maxUsers,
+                current: currentCount || 0,
+                company_type: companyType,
+                plan: rawPlan,
+            });
+        }
+
         const { data: existingInComp } = await db.from('company_users').select('id').eq('email', cleanEmail).eq('company_id', admin.company_id).maybeSingle();
         if (existingInComp) return res.status(400).json({ error: 'This user is already added to your company' });
 
@@ -98,7 +228,7 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
             phone: phone?.trim() || '',
             role,
             approved: true,
-            email_verified: true, // Company users created by admin are auto-verified
+            email_verified: true,
             account_type: 'company_user',
             subscription_status: subStatus,
             subscription_plan: subPlan,
@@ -112,7 +242,7 @@ router.post('/users', authenticateToken, requireCompanyAdmin, async (req, res) =
         const { data: createdCompUser, error: insertError } = await db.from('company_users').insert([newUser]).select().single();
         if (insertError) throw insertError;
 
-        // Also sync or create in regular 'users' table for foreign key integrity (e.g. active_sessions, patients)
+        // Also sync or create in regular 'users' table for foreign key integrity
         const targetUserId = createdCompUser.id;
         if (existingUser) {
             await db.from('users').update({
@@ -210,7 +340,6 @@ router.delete('/users/:userId', authenticateToken, requireCompanyAdmin, async (r
         const { error } = await db.from('company_users').delete().eq('id', userId).eq('company_id', admin.company_id);
         if (error) throw error;
 
-        // Also clean up from users table if account_type is company_user
         await db.from('users').delete().eq('id', userId).eq('company_id', admin.company_id).eq('account_type', 'company_user');
 
         res.json({ success: true, message: 'Deleted' });
@@ -229,7 +358,6 @@ router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmi
         if (!user) return res.status(404).json({ error: 'User not found' });
         if (user.company_id !== admin.company_id) return res.status(403).json({ error: 'Not authorized for this user' });
 
-        // Hierarchical Restriction: Company Admin cannot unblock someone blocked by Super Admin
         if (user.is_blocked && user.blocked_by === 'superadmin') {
             return res.status(403).json({
                 success: false,
@@ -248,7 +376,6 @@ router.post('/users/:userId/toggle-block', authenticateToken, requireCompanyAdmi
 
         if (error) throw error;
 
-        // Sync with users table
         await db.from('users').update({
             is_blocked: newStatus,
             blocked_by: newStatus ? 'company_admin' : null
