@@ -25,5 +25,10 @@ export const config = {
     emailHost: process.env.EMAIL_HOST || 'smtp.gmail.com',
     emailPort: process.env.EMAIL_PORT || 587,
     emailUser: process.env.EMAIL_USER,
-    emailPassword: process.env.EMAIL_PASSWORD
+    emailPassword: process.env.EMAIL_PASSWORD,
+    vapid: {
+        publicKey: process.env.VAPID_PUBLIC_KEY || 'BBTKJyp_LTrS5Qf4p86c7zj4avpWFbbFvZO6QQ85NXFWiD0zt3kq4TzW_OzVyY2ssqbjEdl9GmcQ2SDHQG7hmFY',
+        privateKey: process.env.VAPID_PRIVATE_KEY || 'VK-VQtsL9QLgyM7tsjq7ByK035qsgU00WOpV2DWbBwc',
+        subject: process.env.VAPID_SUBJECT || 'mailto:support@pharmacare.com'
+    }
 };

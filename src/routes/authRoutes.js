@@ -962,21 +962,53 @@ router.put('/update-profile', authenticateToken, async (req, res) => {
 router.post('/change-password', authenticateToken, async (req, res) => {
     try {
         const { current_password, new_password } = req.body;
-        if (!current_password || !new_password || new_password.length < 6) return res.status(400).json({ error: 'Invalid input' });
+        if (!current_password || !new_password) {
+            return res.status(400).json({ success: false, error: 'Current password and new password are required' });
+        }
+        if (new_password.length < 6) {
+            return res.status(400).json({ success: false, error: 'New password must be at least 6 characters long' });
+        }
 
-        const { data: user } = await supabase.from('users').select('password_hash').eq('id', req.user.userId).single();
-        if (!user) return res.status(404).json({ error: 'User not found' });
+        const db = supabaseAdmin || supabase;
+        const userId = req.user.userId;
 
-        const valid = await bcrypt.compare(current_password, user.password_hash);
-        if (!valid) return res.status(401).json({ error: 'Incorrect password' });
+        // Check regular users table
+        let { data: user } = await db.from('users').select('id, password_hash').eq('id', userId).maybeSingle();
+        let targetTable = 'users';
 
-        const hash = await bcrypt.hash(new_password, 10);
-        await supabase.from('users').update({ password_hash: hash, updated_at: new Date().toISOString() }).eq('id', req.user.userId);
+        // Check company_users table if not found in users
+        if (!user) {
+            const { data: compUser } = await db.from('company_users').select('id, password_hash').eq('id', userId).maybeSingle();
+            if (compUser) {
+                user = compUser;
+                targetTable = 'company_users';
+            }
+        }
 
-        res.json({ success: true, message: 'Password changed' });
+        if (!user || !user.password_hash) {
+            return res.status(404).json({ success: false, error: 'User account not found' });
+        }
+
+        const valid = await bcrypt.compare(current_password.trim(), user.password_hash);
+        if (!valid) {
+            return res.status(401).json({ success: false, error: 'Current password does not match' });
+        }
+
+        const hash = await bcrypt.hash(new_password.trim(), 10);
+        await db.from(targetTable).update({
+            password_hash: hash,
+            updated_at: new Date().toISOString()
+        }).eq('id', userId);
+
+        // Also sync to users table if in company_users
+        if (targetTable === 'company_users') {
+            await db.from('users').update({ password_hash: hash, updated_at: new Date().toISOString() }).eq('id', userId).maybeSingle();
+        }
+
+        res.json({ success: true, message: 'Password changed successfully' });
     } catch (e) {
         console.error('Password change error:', e);
-        res.status(500).json({ success: false, error: 'Failed to change password' });
+        res.status(500).json({ success: false, error: 'Failed to change password. Please try again.' });
     }
 });
 
