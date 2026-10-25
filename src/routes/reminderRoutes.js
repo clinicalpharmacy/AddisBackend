@@ -11,23 +11,34 @@ const db = supabaseAdmin || supabase;
  * ------------------------------------------------------------------
  * PRIVACY MODEL
  * ------------------------------------------------------------------
- * The medication_schedules.medication_name column is REPURPOSED to
- * store a short label (A, B, C, ..., Z, AA, AB, ...) — NOT the real
- * medication name. Real names are kept in the browser's localStorage
- * and never reach this server.
+ * `medication_schedules.medication_name` is REPURPOSED to store a
+ * short label (A, B, C, ..., AA, AB, ...) — NOT a medication name.
+ * Medication name, dosage, and instructions are NEVER stored in the
+ * database; they live only in the client's localStorage.
  *
- * If you prefer a cleaner schema, run:
- *   ALTER TABLE medication_schedules ADD COLUMN label TEXT;
- *   ALTER TABLE medication_schedules ALTER COLUMN medication_name DROP NOT NULL;
- * then switch the code below to use `label` instead of `medication_name`.
+ * The `dosage` and `instructions` columns are written with safe
+ * placeholder values (`''` and `null`) so existing NOT NULL
+ * constraints keep working. You can optionally drop these columns
+ * with:
+ *   ALTER TABLE medication_schedules DROP COLUMN dosage;
+ *   ALTER TABLE medication_schedules DROP COLUMN instructions;
  * ------------------------------------------------------------------
  */
 
 const LABEL_RE = /^[A-Z]{1,3}$/;
 
 const toScheduleResponse = (row) => {
-    const { medication_name, ...rest } = row;
-    return { ...rest, label: medication_name ?? null };
+    const { medication_name, dosage, instructions, ...rest } = row;
+    // Never return dosage/instructions to the client if they exist —
+    // they would just be placeholders now. Keep raw values for legacy
+    // rows so the frontend can still display them.
+    const isLabel = LABEL_RE.test(String(medication_name || '').toUpperCase());
+    return {
+        ...rest,
+        label: medication_name ?? null,
+        // Only forward legacy (non-label) rows' dosage/instructions
+        ...(isLabel ? {} : { dosage: dosage ?? null, instructions: instructions ?? null })
+    };
 };
 
 router.get('/vapid-public-key', (req, res) => {
@@ -74,19 +85,13 @@ router.get('/', authenticateToken, async (req, res) => {
 router.post('/', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
-        // NOTE: expects `label`, NOT `medication_name`
-        const { label, dosage, instructions, reminder_times, days_of_week, start_date, end_date } = req.body;
+        // Accept ONLY label + schedule timing — no name, no dosage, no instructions
+        const { label, reminder_times, days_of_week, start_date, end_date } = req.body;
 
-        if (!label || !dosage) {
+        if (!label || !LABEL_RE.test(String(label).toUpperCase())) {
             return res.status(400).json({
                 success: false,
-                error: 'Label (A, B, C…) and dosage are required. Medication names are never stored.'
-            });
-        }
-        if (!LABEL_RE.test(String(label).toUpperCase())) {
-            return res.status(400).json({
-                success: false,
-                error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA).'
+                error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA). Medication name/dosage are never stored.'
             });
         }
 
@@ -98,8 +103,8 @@ router.post('/', authenticateToken, async (req, res) => {
             .insert({
                 user_id: userId,
                 medication_name: String(label).toUpperCase(), // repurposed: stores label
-                dosage: dosage.trim(),
-                instructions: instructions ? instructions.trim() : null,
+                dosage: '',                                   // placeholder — real value lives in localStorage
+                instructions: null,                           // placeholder — real value lives in localStorage
                 reminder_times: times,
                 days_of_week: days,
                 start_date: start_date || new Date().toISOString().split('T')[0],
@@ -114,7 +119,7 @@ router.post('/', authenticateToken, async (req, res) => {
         res.json({
             success: true,
             schedule: toScheduleResponse(data),
-            message: 'Medication reminder created (label stored, name kept client-side)'
+            message: 'Medication reminder created (label only; name/dosage/instructions stay on device)'
         });
     } catch (err) {
         console.error('Error creating reminder:', err.message);
@@ -126,7 +131,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        const { label, dosage, instructions, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
+        // Accept ONLY label + schedule timing — no name, no dosage, no instructions
+        const { label, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
         if (label !== undefined) {
@@ -135,13 +141,12 @@ router.put('/:id', authenticateToken, async (req, res) => {
             }
             updateData.medication_name = String(label).toUpperCase();
         }
-        if (dosage !== undefined) updateData.dosage = dosage.trim();
-        if (instructions !== undefined) updateData.instructions = instructions;
         if (reminder_times !== undefined) updateData.reminder_times = reminder_times;
         if (days_of_week !== undefined) updateData.days_of_week = days_of_week;
         if (start_date !== undefined) updateData.start_date = start_date;
         if (end_date !== undefined) updateData.end_date = end_date;
         if (is_active !== undefined) updateData.is_active = is_active;
+        // NOTE: never touch `dosage` or `instructions` — they belong to the client.
 
         const { data, error } = await db
             .from('medication_schedules')
