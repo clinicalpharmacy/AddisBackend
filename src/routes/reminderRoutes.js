@@ -7,45 +7,70 @@ import { sendTestNotification, sendPushToUser } from '../services/reminderServic
 const router = express.Router();
 const db = supabaseAdmin || supabase;
 
-/**
- * ------------------------------------------------------------------
- * PRIVACY MODEL
- * ------------------------------------------------------------------
- * `medication_schedules.medication_name` is REPURPOSED to store a
- * short label (A, B, C, ..., AA, AB, ...) — NOT a medication name.
- * Medication name, dosage, and instructions are NEVER stored in the
- * database; they live only in the client's localStorage.
- *
- * The `dosage` and `instructions` columns are written with safe
- * placeholder values (`''` and `null`) so existing NOT NULL
- * constraints keep working. You can optionally drop these columns
- * with:
- *   ALTER TABLE medication_schedules DROP COLUMN dosage;
- *   ALTER TABLE medication_schedules DROP COLUMN instructions;
- * ------------------------------------------------------------------
- */
-
+/* ─────────────────────────────────────────────────────────────
+ * PRIVACY MODEL (unchanged)
+ * ───────────────────────────────────────────────────────────── */
 const LABEL_RE = /^[A-Z]{1,3}$/;
 
 const toScheduleResponse = (row) => {
     const { medication_name, dosage, instructions, ...rest } = row;
-    // Never return dosage/instructions to the client if they exist —
-    // they would just be placeholders now. Keep raw values for legacy
-    // rows so the frontend can still display them.
     const isLabel = LABEL_RE.test(String(medication_name || '').toUpperCase());
     return {
         ...rest,
         label: medication_name ?? null,
-        // Only forward legacy (non-label) rows' dosage/instructions
         ...(isLabel ? {} : { dosage: dosage ?? null, instructions: instructions ?? null })
     };
 };
 
+/* ─────────────────────────────────────────────────────────────
+ * ROLE GATE — Reminders are for healthcare clients & admins only
+ * ───────────────────────────────────────────────────────────── */
+const REMINDER_ALLOWED_ROLES = ['admin', 'healthcare_client'];
+
+const requireReminderAccess = async (req, res, next) => {
+    try {
+        // Prefer the role from the JWT (if authenticateToken put it there)
+        let role = req.user?.role;
+
+        // Fall back to a DB lookup if the token doesn't carry the role
+        if (!role) {
+            const { data, error } = await db
+                .from('users')
+                .select('role')
+                .eq('id', req.user.userId)
+                .single();
+            if (error) throw error;
+            role = data?.role;
+            if (role) req.user.role = role; // cache for downstream handlers
+        }
+
+        if (!REMINDER_ALLOWED_ROLES.includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Medication reminders are available only to healthcare clients and administrators.'
+            });
+        }
+        next();
+    } catch (err) {
+        console.error('Error verifying reminder access:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to verify access' });
+    }
+};
+
+/* ─────────────────────────────────────────────────────────────
+ * PUBLIC — VAPID public key (no user data, safe to expose)
+ * ───────────────────────────────────────────────────────────── */
 router.get('/vapid-public-key', (req, res) => {
     res.json({ success: true, publicKey: config.vapid?.publicKey || '' });
 });
 
-router.get('/', authenticateToken, async (req, res) => {
+/* ─────────────────────────────────────────────────────────────
+ * Everything below requires: authenticated + allowed role
+ * ───────────────────────────────────────────────────────────── */
+router.use(authenticateToken);
+router.use(requireReminderAccess);
+
+router.get('/', async (req, res) => {
     try {
         const userId = req.user.userId;
         const todayStr = new Date().toISOString().split('T')[0];
@@ -82,10 +107,9 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 });
 
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', async (req, res) => {
     try {
         const userId = req.user.userId;
-        // Accept ONLY label + schedule timing — no name, no dosage, no instructions
         const { label, reminder_times, days_of_week, start_date, end_date } = req.body;
 
         if (!label || !LABEL_RE.test(String(label).toUpperCase())) {
@@ -102,9 +126,9 @@ router.post('/', authenticateToken, async (req, res) => {
             .from('medication_schedules')
             .insert({
                 user_id: userId,
-                medication_name: String(label).toUpperCase(), // repurposed: stores label
-                dosage: '',                                   // placeholder — real value lives in localStorage
-                instructions: null,                           // placeholder — real value lives in localStorage
+                medication_name: String(label).toUpperCase(),
+                dosage: '',
+                instructions: null,
                 reminder_times: times,
                 days_of_week: days,
                 start_date: start_date || new Date().toISOString().split('T')[0],
@@ -127,11 +151,10 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 });
 
-router.put('/:id', authenticateToken, async (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        // Accept ONLY label + schedule timing — no name, no dosage, no instructions
         const { label, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
@@ -146,7 +169,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
         if (start_date !== undefined) updateData.start_date = start_date;
         if (end_date !== undefined) updateData.end_date = end_date;
         if (is_active !== undefined) updateData.is_active = is_active;
-        // NOTE: never touch `dosage` or `instructions` — they belong to the client.
 
         const { data, error } = await db
             .from('medication_schedules')
@@ -168,7 +190,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 });
 
-router.delete('/:id', authenticateToken, async (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
@@ -185,7 +207,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     }
 });
 
-router.post('/subscribe', authenticateToken, async (req, res) => {
+router.post('/subscribe', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { endpoint, p256dh, auth, device_name } = req.body;
@@ -212,7 +234,7 @@ router.post('/subscribe', authenticateToken, async (req, res) => {
     }
 });
 
-router.post('/unsubscribe', authenticateToken, async (req, res) => {
+router.post('/unsubscribe', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { endpoint } = req.body;
@@ -228,7 +250,7 @@ router.post('/unsubscribe', authenticateToken, async (req, res) => {
     }
 });
 
-router.post('/test-push', authenticateToken, async (req, res) => {
+router.post('/test-push', async (req, res) => {
     try {
         const userId = req.user.userId;
         const result = await sendTestNotification(userId);
@@ -242,7 +264,7 @@ router.post('/test-push', authenticateToken, async (req, res) => {
     }
 });
 
-router.post('/:id/action', authenticateToken, async (req, res) => {
+router.post('/:id/action', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
