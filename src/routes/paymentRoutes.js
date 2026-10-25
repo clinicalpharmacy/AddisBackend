@@ -17,9 +17,63 @@ const generateToken = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pricing helpers — mirror the frontend logic in Signup.jsx
+// ─────────────────────────────────────────────────────────────────────────────
+const STUDENT_ROLES = ['pharmacy_student', 'other_health_science_student'];
+
+/**
+ * Derive the pricing tier for a user.
+ *   'student_or_client' → discounted rate for students & healthcare clients
+ *   'professional'      → default professional rate
+ */
+const getPricingCategory = ({ individual_type, role, email, is_healthcare_client }) => {
+    if (is_healthcare_client) return 'student_or_client';
+    if (email && email.toLowerCase().includes('@hcc.addis-med.com')) return 'student_or_client';
+    if (individual_type === 'client') return 'student_or_client';
+    if (role === 'healthcare_client') return 'student_or_client';
+    if (STUDENT_ROLES.includes(role)) return 'student_or_client';
+    return 'professional';
+};
+
+/**
+ * Calculate the expected amount server-side for a plan + country + category.
+ *   • Individual + student/client + Ethiopia   : 115 ETB monthly / 1,150 ETB yearly
+ *   • Individual + student/client + Intl       : 345 ETB monthly / 3,450 ETB yearly (3×)
+ *   • Everything else uses the base plan price (×3 outside Ethiopia).
+ *
+ * Returns null if the plan is unknown (so the route can fall back to the
+ * frontend-provided amount instead of failing).
+ */
+const calculateExpectedAmount = (planId, country, pricingCategory) => {
+    const plan = getPlanDetails(planId);
+    if (!plan) return null;
+
+    const isIndividualPlan = planId.startsWith('individual_');
+    const isMonthly = planId.endsWith('_monthly');
+    const isYearly = planId.endsWith('_yearly');
+
+    let effectivePrice = plan.price;
+
+    if (isIndividualPlan && pricingCategory === 'student_or_client') {
+        if (isMonthly) effectivePrice = 115;       // 100 base + 15% VAT
+        else if (isYearly) effectivePrice = 1150;  // 1000 base + 15% VAT
+    }
+
+    const isEthiopia = !country || (country.toLowerCase().includes('ethiopia') && !country.toLowerCase().includes('outside'));
+    const multiplier = isEthiopia ? 1 : 3;
+
+    return {
+        amount: effectivePrice * multiplier,
+        category: pricingCategory,
+        isEthiopia,
+        multiplier
+    };
+};
+
 const processRegistration = async (payload, db) => {
     if (!payload) return null;
-    
+
     // Check if user already exists
     const emailToCheck = payload.account_type === 'individual' ? payload.email : payload.admin_email;
     if (!emailToCheck) return null;
@@ -53,7 +107,7 @@ const processRegistration = async (payload, db) => {
             tin_number: payload.tin_number?.trim() || '',
             license_number: payload.license_number?.trim() || '',
             approved: true,
-            role: payload.role || 'pharmacist',
+            role: payload.role || 'pharmacist',   // 'pharmacy_student' → discounted tier
             account_type: 'individual',
             subscription_status: 'inactive',
             email_verified: false,
@@ -127,7 +181,23 @@ const processRegistration = async (payload, db) => {
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {
     try {
-        let { planId, userEmail, userName, userPhone, userId, account_type, frontendUrl, client_password, referral_code, amount: frontendAmount, country, registration_payload } = req.body;
+        let {
+            planId,
+            userEmail,
+            userName,
+            userPhone,
+            userId,
+            account_type,
+            frontendUrl,
+            client_password,
+            referral_code,
+            amount: frontendAmount,
+            country,
+            registration_payload,
+            is_healthcare_client: isHealthcareClientFlag,
+            individual_type,
+            role
+        } = req.body;
         if (!planId || !userEmail) return res.status(400).json({ error: 'Missing planId or email' });
 
         userEmail = userEmail.trim().toLowerCase();
@@ -141,17 +211,52 @@ router.post('/chapa/create-payment', async (req, res) => {
             return res.status(400).json({ error: 'Invalid plan' });
         }
 
-        // Use frontend amount if provided (for international pricing), otherwise fallback to base price
-        let finalAmount = planDetails.price;
-        if (frontendAmount && !isNaN(frontendAmount)) {
-            finalAmount = parseFloat(frontendAmount);
-            console.log(`ℹ️ Using custom amount from frontend: ${finalAmount} ETB (Country: ${country || 'unknown'})`);
-        } else {
-            console.log(`ℹ️ Using base plan price: ${finalAmount} ETB`);
-        }
-        
-        
+        // ─── Determine pricing category (student/client vs. professional) ───
+        const isHealthcareClient = isHealthcareClientFlag === true || userEmail.includes('@hcc.addis-med.com');
+        const derivedRole = role || registration_payload?.role || null;
+        const derivedIndividualType = individual_type || registration_payload?.individual_type || null;
 
+        const pricingCategory = getPricingCategory({
+            individual_type: derivedIndividualType,
+            role: derivedRole,
+            email: userEmail,
+            is_healthcare_client: isHealthcareClient
+        });
+
+        // ─── Determine the amount to charge (server is source of truth) ───
+        const serverPricing = calculateExpectedAmount(planId, country, pricingCategory);
+
+        let finalAmount;
+        if (serverPricing) {
+            finalAmount = serverPricing.amount;
+
+            // Warn (but don't break) if the frontend amount is out of sync
+            if (frontendAmount && !isNaN(frontendAmount)) {
+                const feAmount = parseFloat(frontendAmount);
+                if (Math.abs(serverPricing.amount - feAmount) > 1) {
+                    console.warn(
+                        `⚠️ Amount mismatch for plan ${planId}: ` +
+                        `frontend=${feAmount}, server=${serverPricing.amount} ` +
+                        `(country=${country || 'unknown'}, category=${pricingCategory}). ` +
+                        `Using server amount.`
+                    );
+                } else {
+                    console.log(
+                        `✅ Amount verified: ${finalAmount} ETB ` +
+                        `(plan=${planId}, country=${country || 'unknown'}, category=${pricingCategory})`
+                    );
+                }
+            } else {
+                console.log(`ℹ️ Server-calculated amount: ${finalAmount} ETB (no frontend amount supplied)`);
+            }
+        } else if (frontendAmount && !isNaN(frontendAmount)) {
+            // Fallback: trust the frontend (original behaviour) if server can't calculate
+            finalAmount = parseFloat(frontendAmount);
+            console.warn(`⚠️ Could not calculate server amount for plan ${planId}; trusting frontend amount ${finalAmount} ETB`);
+        } else {
+            finalAmount = planDetails.price;
+            console.warn(`⚠️ No frontend or server amount; falling back to base plan price ${finalAmount} ETB`);
+        }
 
         const tx_ref = `pharma_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const nameParts = (userName || 'User').split(' ');
@@ -168,7 +273,7 @@ router.post('/chapa/create-payment', async (req, res) => {
             customization: { title: 'PharmaCare', description: planDetails.name.substring(0, 100) }
         };
 
-        console.log(`ℹ️ Initializing Chapa payment for ${userEmail} (Plan: ${planId}, Amount: ${finalAmount} ETB, Ref: ${tx_ref})`);
+        console.log(`ℹ️ Initializing Chapa payment for ${userEmail} (Plan: ${planId}, Amount: ${finalAmount} ETB, Category: ${pricingCategory}, Ref: ${tx_ref})`);
 
         const response = await axios.post(`${CHAPA_BASE_URL}/transaction/initialize`, paymentData, {
             headers: { 'Authorization': `Bearer ${CHAPA_SECRET_KEY}`, 'Content-Type': 'application/json' },
@@ -180,7 +285,6 @@ router.post('/chapa/create-payment', async (req, res) => {
             return res.status(400).json({ error: response.data.message || 'Gateway error' });
         }
 
-        const isHealthcareClient = userEmail.includes('@hcc.addis-med.com');
         const dbUserId = isHealthcareClient ? null : userId;
 
         console.log(`ℹ️ Recording pending payment in DB (HC Client: ${isHealthcareClient}, Amount: ${finalAmount} ETB)`);
@@ -208,6 +312,11 @@ router.post('/chapa/create-payment', async (req, res) => {
                 referral_code: referral_code || null,
                 country: country || 'Unknown',
                 is_international: country && !country.toLowerCase().includes('ethiopia'),
+                // ─── NEW: pricing audit fields ───
+                pricing_category: pricingCategory,
+                pricing_amount: finalAmount,
+                pricing_currency: 'ETB',
+                is_ethiopia: serverPricing ? serverPricing.isEthiopia : (country || '').toLowerCase().includes('ethiopia'),
                 registration_payload: registration_payload || null
             },
             created_at: new Date().toISOString(),
@@ -220,7 +329,16 @@ router.post('/chapa/create-payment', async (req, res) => {
         }
 
         console.log('✅ Payment initialization successful, returning checkout URL');
-        res.json({ success: true, payment_url: response.data.data.checkout_url, tx_ref, amount: Number(finalAmount), user_phone: userPhone });
+        res.json({
+            success: true,
+            payment_url: response.data.data.checkout_url,
+            tx_ref,
+            amount: Number(finalAmount),
+            currency: 'ETB',
+            pricing_category: pricingCategory,
+            is_ethiopia: serverPricing ? serverPricing.isEthiopia : undefined,
+            user_phone: userPhone
+        });
     } catch (e) {
         // Log EVERYTHING for debugging the 500 error
         const rawError = e.response?.data;
@@ -277,6 +395,15 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
         if (status?.toLowerCase() === 'success' && payment.user_email) {
             const cleanEmail = payment.user_email.trim().toLowerCase();
 
+            // Resolve pricing category for audit
+            const webhookPricingCategory = payment.gateway_response?.pricing_category ||
+                getPricingCategory({
+                    individual_type: null,
+                    role: payment.gateway_response?.registration_payload?.role || null,
+                    email: cleanEmail,
+                    is_healthcare_client: cleanEmail.includes('@hcc.addis-med.com')
+                });
+
             // Healthcare clients use a temp email not stored in DB - create it now
             const isHealthcareClient = cleanEmail.includes('@hcc.addis-med.com');
             if (isHealthcareClient) {
@@ -295,7 +422,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                     password_hash: hashedPassword,
                     full_name: `Healthcare Client ${clientId}`,
                     phone: payment.user_phone || '0000000000',
-                    role: 'healthcare_client',
+                    role: 'healthcare_client',   // → maps to student_or_client pricing tier
                     account_type: 'individual',
                     country: userCountry,
                     region: 'N/A',
@@ -313,7 +440,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                 if (createError) {
                     console.error('❌ Webhook: Failed to create healthcare client user account:', JSON.stringify(createError, null, 2));
                 } else {
-                    console.log(`✅ Webhook: Healthcare client user created/updated successfully: ${cleanEmail}`);
+                    console.log(`✅ Webhook: Healthcare client user created/updated successfully (${webhookPricingCategory} tier): ${cleanEmail}`);
                 }
 
                 return res.json({ success: true, message: 'Processed' });
@@ -344,7 +471,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
             }
 
             if (user) {
-                console.log(`👤 Webhook: Processing user ${user.email} (ID: ${user.id})`);
+                console.log(`👤 Webhook: Processing user ${user.email} (ID: ${user.id}, tier: ${webhookPricingCategory})`);
 
                 // 1. ENSURE TOKEN EXISTS
                 let currentToken = user.email_verification_token;
@@ -420,7 +547,7 @@ router.post('/chapa/webhook', express.json(), async (req, res) => {
                 }]);
 
                 // (Email already sent above)
-                console.log(`ℹ️ Webhook: DB Updates complete for ${user.email}`);
+                console.log(`ℹ️ Webhook: DB Updates complete for ${user.email} (tier: ${webhookPricingCategory})`);
             } else {
                 console.warn(`⚠️ Webhook: No user found with email ${cleanEmail}`);
             }
@@ -475,10 +602,19 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                     if (payment.user_email) {
                         const cleanEmail = payment.user_email.trim().toLowerCase();
 
+                        // Resolve pricing category for audit
+                        const verifyPricingCategory = payment.gateway_response?.pricing_category ||
+                            getPricingCategory({
+                                individual_type: null,
+                                role: payment.gateway_response?.registration_payload?.role || null,
+                                email: cleanEmail,
+                                is_healthcare_client: cleanEmail.includes('@hcc.addis-med.com')
+                            });
+
                         // Healthcare clients use a temp email - create user record if missing
                         const isHealthcareClient = cleanEmail.includes('@hcc.addis-med.com');
                         if (isHealthcareClient) {
-                            console.log(`ℹ️ Verify: Healthcare client payment - Creating user account`);
+                            console.log(`ℹ️ Verify: Healthcare client payment - Creating user account (tier: ${verifyPricingCategory})`);
 
                             const clientId = cleanEmail.split('@')[0];
                             const rawPassword = payment.gateway_response?.client_password || 'healthcare123';
@@ -506,7 +642,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 password_hash: hashedPassword,
                                 full_name: `Healthcare Client ${clientId}`,
                                 phone: payment.user_phone || '0000000000',
-                                role: 'healthcare_client',
+                                role: 'healthcare_client',    // → maps to student_or_client pricing tier
                                 account_type: 'individual',
                                 country: userCountry,
                                 region: 'N/A',
@@ -570,7 +706,8 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                                 is_paid: true,
                                 status: 'paid',
                                 subscription_end_date: endDate,
-                                is_healthcare_client: true
+                                is_healthcare_client: true,
+                                pricing_category: verifyPricingCategory
                             });
                         }
 
@@ -599,7 +736,7 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                         }
 
                         if (user) {
-                            console.log(`👤 Verify: Processing user ${user.email} (ID: ${user.id})`);
+                            console.log(`👤 Verify: Processing user ${user.email} (ID: ${user.id}, tier: ${verifyPricingCategory})`);
 
                             // 1. ENSURE TOKEN EXISTS
                             let currentToken = user.email_verification_token;
@@ -712,7 +849,8 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
                         payment: { ...payment, ...updates, subscription_end_date: endDate },
                         is_paid: true,
                         status: 'paid',
-                        subscription_end_date: endDate
+                        subscription_end_date: endDate,
+                        pricing_category: verifyPricingCategory
                     });
                 }
             } catch (e) {
@@ -734,7 +872,8 @@ router.get('/payments/:tx_ref/verify', async (req, res) => {
             payment: { ...payment, subscription_end_date },
             is_paid: payment.status === 'paid',
             status: payment.status,
-            subscription_end_date
+            subscription_end_date,
+            pricing_category: payment.gateway_response?.pricing_category || null
         });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
