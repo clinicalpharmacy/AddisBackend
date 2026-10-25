@@ -2,51 +2,57 @@ import express from 'express';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 import { config } from '../config/env.js';
-import {
-    sendTestNotification,
-    sendPushToUser
-} from '../services/reminderService.js';
+import { sendTestNotification, sendPushToUser } from '../services/reminderService.js';
 
 const router = express.Router();
 const db = supabaseAdmin || supabase;
 
 /**
- * Public VAPID Key for frontend PushManager subscription
+ * ------------------------------------------------------------------
+ * PRIVACY MODEL
+ * ------------------------------------------------------------------
+ * The medication_schedules.medication_name column is REPURPOSED to
+ * store a short label (A, B, C, ..., Z, AA, AB, ...) — NOT the real
+ * medication name. Real names are kept in the browser's localStorage
+ * and never reach this server.
+ *
+ * If you prefer a cleaner schema, run:
+ *   ALTER TABLE medication_schedules ADD COLUMN label TEXT;
+ *   ALTER TABLE medication_schedules ALTER COLUMN medication_name DROP NOT NULL;
+ * then switch the code below to use `label` instead of `medication_name`.
+ * ------------------------------------------------------------------
  */
+
+const LABEL_RE = /^[A-Z]{1,3}$/;
+
+const toScheduleResponse = (row) => {
+    const { medication_name, ...rest } = row;
+    return { ...rest, label: medication_name ?? null };
+};
+
 router.get('/vapid-public-key', (req, res) => {
-    res.json({
-        success: true,
-        publicKey: config.vapid?.publicKey || ''
-    });
+    res.json({ success: true, publicKey: config.vapid?.publicKey || '' });
 });
 
-/**
- * Get all medication schedules and today's logs for logged-in user
- */
 router.get('/', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const todayStr = new Date().toISOString().split('T')[0];
 
-        // 1. Fetch schedules
         const { data: schedules, error: schedErr } = await db
             .from('medication_schedules')
             .select('*')
             .eq('user_id', userId)
             .order('created_at', { ascending: false });
-
         if (schedErr) throw schedErr;
 
-        // 2. Fetch today's logs for adherence status
         const { data: todayLogs, error: logErr } = await db
             .from('medication_reminder_logs')
             .select('*')
             .eq('user_id', userId)
             .eq('scheduled_date', todayStr);
-
         if (logErr) throw logErr;
 
-        // 3. Check if user has active push subscriptions
         const { count: subscriptionCount } = await db
             .from('push_subscriptions')
             .select('*', { count: 'exact', head: true })
@@ -54,7 +60,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
         res.json({
             success: true,
-            schedules: schedules || [],
+            schedules: (schedules || []).map(toScheduleResponse),
             todayLogs: todayLogs || [],
             hasActiveDevices: (subscriptionCount || 0) > 0,
             deviceCount: subscriptionCount || 0
@@ -65,42 +71,33 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * Create a new medication reminder schedule
- */
 router.post('/', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
-        const {
-            medication_name,
-            dosage,
-            instructions,
-            reminder_times,
-            days_of_week,
-            start_date,
-            end_date
-        } = req.body;
+        // NOTE: expects `label`, NOT `medication_name`
+        const { label, dosage, instructions, reminder_times, days_of_week, start_date, end_date } = req.body;
 
-        if (!medication_name || !dosage) {
+        if (!label || !dosage) {
             return res.status(400).json({
                 success: false,
-                error: 'Medication name and dosage are required'
+                error: 'Label (A, B, C…) and dosage are required. Medication names are never stored.'
+            });
+        }
+        if (!LABEL_RE.test(String(label).toUpperCase())) {
+            return res.status(400).json({
+                success: false,
+                error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA).'
             });
         }
 
-        const times = Array.isArray(reminder_times) && reminder_times.length > 0
-            ? reminder_times
-            : ['08:00'];
-
-        const days = Array.isArray(days_of_week) && days_of_week.length > 0
-            ? days_of_week
-            : [0, 1, 2, 3, 4, 5, 6];
+        const times = Array.isArray(reminder_times) && reminder_times.length > 0 ? reminder_times : ['08:00'];
+        const days = Array.isArray(days_of_week) && days_of_week.length > 0 ? days_of_week : [0, 1, 2, 3, 4, 5, 6];
 
         const { data, error } = await db
             .from('medication_schedules')
             .insert({
                 user_id: userId,
-                medication_name: medication_name.trim(),
+                medication_name: String(label).toUpperCase(), // repurposed: stores label
                 dosage: dosage.trim(),
                 instructions: instructions ? instructions.trim() : null,
                 reminder_times: times,
@@ -116,8 +113,8 @@ router.post('/', authenticateToken, async (req, res) => {
 
         res.json({
             success: true,
-            schedule: data,
-            message: 'Medication schedule created successfully'
+            schedule: toScheduleResponse(data),
+            message: 'Medication reminder created (label stored, name kept client-side)'
         });
     } catch (err) {
         console.error('Error creating reminder:', err.message);
@@ -125,26 +122,19 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * Update an existing medication reminder schedule
- */
 router.put('/:id', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        const {
-            medication_name,
-            dosage,
-            instructions,
-            reminder_times,
-            days_of_week,
-            start_date,
-            end_date,
-            is_active
-        } = req.body;
+        const { label, dosage, instructions, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
-        if (medication_name !== undefined) updateData.medication_name = medication_name.trim();
+        if (label !== undefined) {
+            if (!LABEL_RE.test(String(label).toUpperCase())) {
+                return res.status(400).json({ success: false, error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA).' });
+            }
+            updateData.medication_name = String(label).toUpperCase();
+        }
         if (dosage !== undefined) updateData.dosage = dosage.trim();
         if (instructions !== undefined) updateData.instructions = instructions;
         if (reminder_times !== undefined) updateData.reminder_times = reminder_times;
@@ -160,12 +150,11 @@ router.put('/:id', authenticateToken, async (req, res) => {
             .eq('user_id', userId)
             .select()
             .single();
-
         if (error) throw error;
 
         res.json({
             success: true,
-            schedule: data,
+            schedule: toScheduleResponse(data),
             message: 'Medication schedule updated successfully'
         });
     } catch (err) {
@@ -174,48 +163,30 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * Delete a medication reminder schedule
- */
 router.delete('/:id', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-
         const { error } = await db
             .from('medication_schedules')
             .delete()
             .eq('id', id)
             .eq('user_id', userId);
-
         if (error) throw error;
-
-        res.json({
-            success: true,
-            message: 'Medication schedule deleted'
-        });
+        res.json({ success: true, message: 'Medication schedule deleted' });
     } catch (err) {
         console.error('Error deleting reminder:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-/**
- * Save device Web Push subscription
- */
 router.post('/subscribe', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { endpoint, p256dh, auth, device_name } = req.body;
-
         if (!endpoint || !p256dh || !auth) {
-            return res.status(400).json({
-                success: false,
-                error: 'Subscription endpoint and keys are required'
-            });
+            return res.status(400).json({ success: false, error: 'Subscription endpoint and keys are required' });
         }
-
-        // Upsert subscription
         const { data, error } = await db
             .from('push_subscriptions')
             .upsert({
@@ -228,82 +199,51 @@ router.post('/subscribe', authenticateToken, async (req, res) => {
             }, { onConflict: 'endpoint' })
             .select()
             .single();
-
         if (error) throw error;
-
-        res.json({
-            success: true,
-            message: 'Device subscribed to medication reminders successfully',
-            subscription: data
-        });
+        res.json({ success: true, message: 'Device subscribed successfully', subscription: data });
     } catch (err) {
         console.error('Error saving subscription:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-/**
- * Unsubscribe a device
- */
 router.post('/unsubscribe', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { endpoint } = req.body;
-
         if (endpoint) {
             await db.from('push_subscriptions').delete().eq('endpoint', endpoint).eq('user_id', userId);
         } else {
-            // Remove all devices for this user
             await db.from('push_subscriptions').delete().eq('user_id', userId);
         }
-
-        res.json({
-            success: true,
-            message: 'Device unsubscribed from push notifications'
-        });
+        res.json({ success: true, message: 'Device unsubscribed from push notifications' });
     } catch (err) {
         console.error('Error unsubscribing device:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-/**
- * Send a test push notification to user's registered devices
- */
 router.post('/test-push', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const result = await sendTestNotification(userId);
-
         if (!result.success) {
-            return res.status(400).json({
-                success: false,
-                message: result.message || result.error || 'Failed to send test notification'
-            });
+            return res.status(400).json({ success: false, message: result.message || result.error || 'Failed to send test notification' });
         }
-
-        res.json({
-            success: true,
-            message: 'Test notification sent to your device!',
-            devicesReached: result.totalDevices
-        });
+        res.json({ success: true, message: 'Test notification sent to your device!', devicesReached: result.totalDevices });
     } catch (err) {
         console.error('Error in test-push:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-/**
- * Record action taken on a medication (Taken, Snoozed, Skipped)
- */
 router.post('/:id/action', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        const { action, scheduled_time } = req.body; // action: 'taken' | 'snoozed' | 'skipped'
+        const { action, scheduled_time } = req.body;
         const todayStr = new Date().toISOString().split('T')[0];
 
-        // Find existing log or insert new
         const { data: existingLog } = await db
             .from('medication_reminder_logs')
             .select('id')
@@ -314,10 +254,9 @@ router.post('/:id/action', authenticateToken, async (req, res) => {
             .maybeSingle();
 
         if (existingLog) {
-            await db.from('medication_reminder_logs').update({
-                status: action || 'taken',
-                action_taken_at: new Date().toISOString()
-            }).eq('id', existingLog.id);
+            await db.from('medication_reminder_logs')
+                .update({ status: action || 'taken', action_taken_at: new Date().toISOString() })
+                .eq('id', existingLog.id);
         } else {
             await db.from('medication_reminder_logs').insert({
                 schedule_id: id,
@@ -329,10 +268,7 @@ router.post('/:id/action', authenticateToken, async (req, res) => {
             });
         }
 
-        res.json({
-            success: true,
-            message: `Medication marked as ${action || 'taken'}`
-        });
+        res.json({ success: true, message: `Medication marked as ${action || 'taken'}` });
     } catch (err) {
         console.error('Error logging medication action:', err.message);
         res.status(500).json({ success: false, error: err.message });
