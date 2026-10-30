@@ -673,4 +673,40 @@ router.post('/notifications/read-all', authenticateToken, async (req, res) => {
     }
 });
 
+// ==========================================
+// 💬 CHATBOT — ADMIN SUMMARY
+// ==========================================
+// (Full CRUD is in routes/chatbot.js — these two helpers exist so the
+//  existing dashboard can show a badge without changing imports.)
+
+router.get('/chatbot/unread-count', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const { count, error } = await db
+            .from('chat_messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('sender_type', 'visitor')
+            .is('read_at', null);
+        if (error) throw error;
+        res.json({ success: true, unread_count: count || 0 });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+router.get('/chatbot/recent', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const db = supabaseAdmin || supabase;
+        const { data, error } = await db
+            .from('chat_sessions')
+            .select('id, visitor_name, visitor_email, last_message_at, status')
+            .order('last_message_at', { ascending: false, nullsFirst: false })
+            .limit(5);
+        if (error) throw error;
+        res.json({ success: true, sessions: data || [] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
 export default router;
