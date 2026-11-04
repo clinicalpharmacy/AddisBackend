@@ -224,7 +224,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
             reference: reference ? reference.trim() : '',
             category: category || 'general',
             image_url: image_url || null,
-            author_name: req.user?.full_name || req.user?.email || 'pharmcare2001@yahoo.com',
+            author_name: req.user?.full_name || req.user?.email || 'Admin',
             views: 0
         };
 
