@@ -17,9 +17,6 @@ const generateToken = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
-<<<<<<< HEAD
-export const processRegistration = async (payload, db) => {
-=======
 // ─────────────────────────────────────────────────────────────────────────────
 // Pricing helpers — mirror the frontend logic in Signup.jsx
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,12 +38,6 @@ const getPricingCategory = ({ individual_type, role, email, is_healthcare_client
 
 /**
  * Calculate the expected amount server-side for a plan + country + category.
- *   • Individual + student/client + Ethiopia   : 115 ETB monthly / 1,150 ETB yearly
- *   • Individual + student/client + Intl       : 345 ETB monthly / 3,450 ETB yearly (3×)
- *   • Everything else uses the base plan price (×3 outside Ethiopia).
- *
- * Returns null if the plan is unknown (so the route can fall back to the
- * frontend-provided amount instead of failing).
  */
 const calculateExpectedAmount = (planId, country, pricingCategory) => {
     const plan = getPlanDetails(planId);
@@ -74,8 +65,7 @@ const calculateExpectedAmount = (planId, country, pricingCategory) => {
     };
 };
 
-const processRegistration = async (payload, db) => {
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
+export const processRegistration = async (payload, db) => {
     if (!payload) return null;
 
     // Check if user already exists

@@ -2,15 +2,11 @@ import express from 'express';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 import { config } from '../config/env.js';
-<<<<<<< HEAD
 import {
     sendTestNotification,
     sendPushToUser,
     checkAndSendDueReminders
 } from '../services/reminderService.js';
-=======
-import { sendTestNotification, sendPushToUser } from '../services/reminderService.js';
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
 
 const router = express.Router();
 const db = supabaseAdmin || supabase;
@@ -37,10 +33,8 @@ const REMINDER_ALLOWED_ROLES = ['admin', 'healthcare_client'];
 
 const requireReminderAccess = async (req, res, next) => {
     try {
-        // Prefer the role from the JWT (if authenticateToken put it there)
         let role = req.user?.role;
 
-        // Fall back to a DB lookup if the token doesn't carry the role
         if (!role) {
             const { data, error } = await db
                 .from('users')
@@ -49,7 +43,7 @@ const requireReminderAccess = async (req, res, next) => {
                 .single();
             if (error) throw error;
             role = data?.role;
-            if (role) req.user.role = role; // cache for downstream handlers
+            if (role) req.user.role = role;
         }
 
         if (!REMINDER_ALLOWED_ROLES.includes(role)) {
@@ -72,7 +66,6 @@ router.get('/vapid-public-key', (req, res) => {
     res.json({ success: true, publicKey: config.vapid?.publicKey || '' });
 });
 
-<<<<<<< HEAD
 /**
  * Trigger cron check for due medication reminders
  * GET or POST /api/reminders/cron
@@ -92,11 +85,6 @@ router.all('/cron', async (req, res) => {
     }
 });
 
-/**
- * Get all medication schedules and today's logs for logged-in user
- */
-router.get('/', authenticateToken, async (req, res) => {
-=======
 /* ─────────────────────────────────────────────────────────────
  * Everything below requires: authenticated + allowed role
  * ───────────────────────────────────────────────────────────── */
@@ -104,7 +92,6 @@ router.use(authenticateToken);
 router.use(requireReminderAccess);
 
 router.get('/', async (req, res) => {
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
     try {
         const userId = req.user.userId;
         const todayStr = new Date().toISOString().split('T')[0];
@@ -128,20 +115,9 @@ router.get('/', async (req, res) => {
             .select('*', { count: 'exact', head: true })
             .eq('user_id', userId);
 
-        const formattedSchedules = (schedules || []).map(s => ({
-            ...s,
-            label: s.label || s.medication_name,
-            medication_name: s.medication_name,
-            dosage: s.dosage
-        }));
-
         res.json({
             success: true,
-<<<<<<< HEAD
-            schedules: formattedSchedules,
-=======
             schedules: (schedules || []).map(toScheduleResponse),
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
             todayLogs: todayLogs || [],
             hasActiveDevices: (subscriptionCount || 0) > 0,
             deviceCount: subscriptionCount || 0
@@ -157,17 +133,12 @@ router.post('/', async (req, res) => {
         const userId = req.user.userId;
         const { label, reminder_times, days_of_week, start_date, end_date } = req.body;
 
-<<<<<<< HEAD
-        const medName = (medication_name || req.body.label || 'Medication').trim();
-        const medDose = (dosage || '1 dose').trim();
-=======
         if (!label || !LABEL_RE.test(String(label).toUpperCase())) {
             return res.status(400).json({
                 success: false,
                 error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA). Medication name/dosage are never stored.'
             });
         }
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
 
         const times = Array.isArray(reminder_times) && reminder_times.length > 0 ? reminder_times : ['08:00'];
         const days = Array.isArray(days_of_week) && days_of_week.length > 0 ? days_of_week : [0, 1, 2, 3, 4, 5, 6];
@@ -176,15 +147,9 @@ router.post('/', async (req, res) => {
             .from('medication_schedules')
             .insert({
                 user_id: userId,
-<<<<<<< HEAD
-                medication_name: medName,
-                dosage: medDose,
-                instructions: instructions ? instructions.trim() : null,
-=======
                 medication_name: String(label).toUpperCase(),
                 dosage: '',
                 instructions: null,
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
                 reminder_times: times,
                 days_of_week: days,
                 start_date: start_date || new Date().toISOString().split('T')[0],
@@ -217,20 +182,12 @@ router.put('/:id', async (req, res) => {
         const { label, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
-<<<<<<< HEAD
-        if (medication_name !== undefined || req.body.label !== undefined) {
-            updateData.medication_name = (medication_name || req.body.label).trim();
-        }
-        if (dosage !== undefined) updateData.dosage = dosage.trim();
-        if (instructions !== undefined) updateData.instructions = instructions ? instructions.trim() : null;
-=======
         if (label !== undefined) {
             if (!LABEL_RE.test(String(label).toUpperCase())) {
                 return res.status(400).json({ success: false, error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA).' });
             }
             updateData.medication_name = String(label).toUpperCase();
         }
->>>>>>> 64a1aa34283127b0d2fb2a8f2c50c7d6e5ca5e7f
         if (reminder_times !== undefined) updateData.reminder_times = reminder_times;
         if (days_of_week !== undefined) updateData.days_of_week = days_of_week;
         if (start_date !== undefined) updateData.start_date = start_date;
