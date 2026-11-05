@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
-import { getPlanDetails, calculateEndDate } from '../utils/helpers.js';
+import { getPlanDetails, calculateEndDate, isValidUUID } from '../utils/helpers.js';
 import { sendVerificationEmail } from '../utils/emailService.js';
 
 import { EncryptionService } from '../utils/encryptionService.js';
@@ -17,7 +17,7 @@ const generateToken = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
-const processRegistration = async (payload, db) => {
+export const processRegistration = async (payload, db) => {
     if (!payload) return null;
     
     // Check if user already exists
@@ -56,7 +56,7 @@ const processRegistration = async (payload, db) => {
             role: payload.role || 'pharmacist',
             account_type: 'individual',
             subscription_status: 'inactive',
-            email_verified: false,
+            email_verified: true, // Email verification bypassed by request
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
             encryption_salt: encryptionSalt,
@@ -104,7 +104,7 @@ const processRegistration = async (payload, db) => {
             role: 'company_admin',
             account_type: 'company',
             approved: true,
-            email_verified: false,
+            email_verified: true, // Email verification bypassed by request
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
             encryption_salt: encryptionSalt,
@@ -123,6 +123,161 @@ const processRegistration = async (payload, db) => {
         return user;
     }
 };
+
+// Manual CBE Payment Submission
+router.post('/payments/manual/submit', async (req, res) => {
+    try {
+        let {
+            planId,
+            userEmail,
+            userName,
+            userPhone,
+            userId,
+            account_type,
+            referral_code,
+            amount: frontendAmount,
+            country,
+            registration_payload,
+            transaction_ref,
+            payment_method = 'cbe',
+            is_healthcare_client,
+            healthcare_client_id,
+            client_password
+        } = req.body;
+
+        if (!planId || !userEmail) {
+            return res.status(400).json({ error: 'Missing planId or email' });
+        }
+
+        if (!transaction_ref || !transaction_ref.trim()) {
+            return res.status(400).json({ error: 'Please enter your CBE transaction reference number.' });
+        }
+
+        userEmail = userEmail.trim().toLowerCase();
+        const planDetails = getPlanDetails(planId);
+        let finalAmount = planDetails ? planDetails.price : 0;
+        if (frontendAmount && !isNaN(frontendAmount)) {
+            finalAmount = parseFloat(frontendAmount);
+        }
+
+        const db = supabaseAdmin || supabase;
+        const trimmedTxRef = transaction_ref.trim();
+
+        // Check if transaction_ref already exists in payments to prevent double-submitting
+        const { data: existingPayment } = await db.from('payments').select('id, status').eq('tx_ref', trimmedTxRef).maybeSingle();
+        if (existingPayment) {
+            return res.status(400).json({
+                error: `Transaction reference '${trimmedTxRef}' has already been submitted (Status: ${existingPayment.status}).`
+            });
+        }
+
+        const isHealthcareClient = userEmail.includes('@hcc.addis-med.com') || !!is_healthcare_client;
+        const clientId = healthcare_client_id || (isHealthcareClient ? userEmail.split('@')[0] : null);
+
+        // Ensure user is created in database if registration_payload is provided
+        let dbUser = null;
+        if (registration_payload) {
+            dbUser = await processRegistration(registration_payload, db);
+        } else if (userEmail) {
+            const { data: foundUser } = await db.from('users').select('*').ilike('email', userEmail).maybeSingle();
+            dbUser = foundUser;
+        }
+
+        // If healthcare client and not in users table yet, create them with inactive subscription
+        if (!dbUser && isHealthcareClient) {
+            try {
+                const rawPassword = client_password || 'healthcare123';
+                const hashedPassword = await bcrypt.hash(rawPassword, 10);
+                const userCountry = country || 'Ethiopia';
+                const { data: newClient, error: clientErr } = await db.from('users').insert([{
+                    email: userEmail,
+                    password_hash: hashedPassword,
+                    full_name: userName || `Healthcare Client ${clientId || ''}`.trim(),
+                    phone: userPhone || '0000000000',
+                    role: 'healthcare_client',
+                    account_type: 'individual',
+                    country: userCountry,
+                    region: 'N/A',
+                    woreda: 'N/A',
+                    tin_number: 'N/A',
+                    email_verified: true,
+                    approved: false, // will be approved by admin
+                    subscription_status: 'inactive',
+                    subscription_plan: planId,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                }]).select().maybeSingle();
+
+                if (clientErr) {
+                    console.error('⚠️ Could not pre-create healthcare client user:', clientErr.message);
+                } else {
+                    dbUser = newClient;
+                }
+            } catch (createErr) {
+                console.error('⚠️ Healthcare client pre-creation error:', createErr);
+            }
+        }
+
+        // Effective user_id MUST be a valid UUID for the Postgres payments table (avoid non-UUID string syntax error)
+        let effectiveUserId = null;
+        if (dbUser?.id && isValidUUID(dbUser.id)) {
+            effectiveUserId = dbUser.id;
+        } else if (userId && isValidUUID(userId)) {
+            effectiveUserId = userId;
+        }
+
+        const paymentRecord = {
+            user_id: effectiveUserId,
+            user_email: userEmail,
+            user_name: userName || dbUser?.full_name || 'User',
+            user_phone: userPhone || dbUser?.phone || null,
+            tx_ref: trimmedTxRef,
+            transaction_id: trimmedTxRef,
+            plan_id: planId,
+            plan_name: planDetails?.name || planId,
+            amount: finalAmount,
+            currency: 'ETB',
+            status: 'pending',
+            payment_method: payment_method || 'cbe',
+            payment_url: null,
+            account_type: account_type || dbUser?.account_type || 'individual',
+            gateway_response: {
+                payment_type: 'manual_transfer',
+                payment_method: payment_method || 'cbe',
+                account_name: 'Addis Med',
+                cbe_account: '1000791259847',
+                telebirr_phone: '+251919519512',
+                transaction_ref: trimmedTxRef,
+                referral_code: referral_code || null,
+                country: country || 'Ethiopia',
+                registration_payload: registration_payload || null,
+                is_healthcare_client: isHealthcareClient,
+                healthcare_client_id: clientId,
+                client_password: client_password || null
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        const { data: insertedPayment, error: insertError } = await db.from('payments').insert([paymentRecord]).select().single();
+        if (insertError) {
+            console.error('❌ Manual payment insert failed:', insertError);
+            throw new Error(`Database error: ${insertError.message}`);
+        }
+
+        console.log(`✅ Manual CBE payment recorded for ${userEmail} (Ref: ${trimmedTxRef}, Amount: ${finalAmount} ETB)`);
+
+        res.json({
+            success: true,
+            message: 'CBE payment reference submitted successfully. Waiting for admin approval.',
+            payment: insertedPayment,
+            tx_ref: trimmedTxRef
+        });
+    } catch (e) {
+        console.error('❌ Manual payment error:', e);
+        res.status(500).json({ success: false, error: e.message || 'Payment submission failed' });
+    }
+});
 
 // Create Payment
 router.post('/chapa/create-payment', async (req, res) => {

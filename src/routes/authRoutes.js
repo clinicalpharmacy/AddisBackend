@@ -202,7 +202,7 @@ router.post('/login', async (req, res) => {
         if (user.role !== 'admin' && user.role !== 'superadmin') {
             // 1. Company Admins: REQUIRE BOTH email verification and super-admin approval
             if (isCompanyAdmin) {
-                const isVerified = user.email_verified;
+                const isVerified = true; // Email verification temporarily disabled
                 const isApproved = user.approved;
                 if (!isVerified || !isApproved) {
                     return res.status(401).json({
@@ -227,7 +227,7 @@ router.post('/login', async (req, res) => {
                 }
             } else {
                 // 3. Regular Individual Users: REQUIRE email verification
-                if (!user.email_verified) {
+                if (false && !user.email_verified) { // Email verification temporarily disabled
                     return res.status(401).json({
                         success: false,
                         error: 'Please verify your email address to log in.',
@@ -574,7 +574,7 @@ router.post('/register', async (req, res) => {
             role: role || 'pharmacist',
             account_type: account_type || 'individual',
             subscription_status: 'inactive',
-            email_verified: account_type === 'company_user',
+            email_verified: true, // Email verification disabled by request
             email_verification_token: account_type === 'company_user' ? null : verificationToken,
             email_verification_expires: account_type === 'company_user' ? null : verificationExpires,
             encryption_salt: encryptionSalt,
@@ -717,7 +717,7 @@ router.post('/register-company', async (req, res) => {
             tin_number: tin_number?.trim() || '',
             approved: false, role: 'company_admin', account_type: 'company',
             subscription_status: 'inactive',
-            email_verified: false,
+            email_verified: true, // Email verification disabled by request
             email_verification_token: verificationToken,
             email_verification_expires: verificationExpires,
             encryption_salt: encryptionSalt,

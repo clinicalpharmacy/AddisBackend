@@ -4,7 +4,8 @@ import { authenticateToken } from '../middleware/authMiddleware.js';
 import { config } from '../config/env.js';
 import {
     sendTestNotification,
-    sendPushToUser
+    sendPushToUser,
+    checkAndSendDueReminders
 } from '../services/reminderService.js';
 
 const router = express.Router();
@@ -18,6 +19,25 @@ router.get('/vapid-public-key', (req, res) => {
         success: true,
         publicKey: config.vapid?.publicKey || ''
     });
+});
+
+/**
+ * Trigger cron check for due medication reminders
+ * GET or POST /api/reminders/cron
+ */
+router.all('/cron', async (req, res) => {
+    try {
+        console.log('⏰ Reminder cron triggered at', new Date().toISOString());
+        await checkAndSendDueReminders();
+        res.json({
+            success: true,
+            message: 'Medication reminders checked and dispatched',
+            timestamp: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error('Error in /reminders/cron:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 /**
@@ -52,9 +72,16 @@ router.get('/', authenticateToken, async (req, res) => {
             .select('*', { count: 'exact', head: true })
             .eq('user_id', userId);
 
+        const formattedSchedules = (schedules || []).map(s => ({
+            ...s,
+            label: s.label || s.medication_name,
+            medication_name: s.medication_name,
+            dosage: s.dosage
+        }));
+
         res.json({
             success: true,
-            schedules: schedules || [],
+            schedules: formattedSchedules,
             todayLogs: todayLogs || [],
             hasActiveDevices: (subscriptionCount || 0) > 0,
             deviceCount: subscriptionCount || 0
@@ -81,12 +108,8 @@ router.post('/', authenticateToken, async (req, res) => {
             end_date
         } = req.body;
 
-        if (!medication_name || !dosage) {
-            return res.status(400).json({
-                success: false,
-                error: 'Medication name and dosage are required'
-            });
-        }
+        const medName = (medication_name || req.body.label || 'Medication').trim();
+        const medDose = (dosage || '1 dose').trim();
 
         const times = Array.isArray(reminder_times) && reminder_times.length > 0
             ? reminder_times
@@ -100,8 +123,8 @@ router.post('/', authenticateToken, async (req, res) => {
             .from('medication_schedules')
             .insert({
                 user_id: userId,
-                medication_name: medication_name.trim(),
-                dosage: dosage.trim(),
+                medication_name: medName,
+                dosage: medDose,
                 instructions: instructions ? instructions.trim() : null,
                 reminder_times: times,
                 days_of_week: days,
@@ -113,6 +136,9 @@ router.post('/', authenticateToken, async (req, res) => {
             .single();
 
         if (error) throw error;
+
+        // Proactively check due reminders
+        checkAndSendDueReminders().catch(() => {});
 
         res.json({
             success: true,
@@ -144,9 +170,11 @@ router.put('/:id', authenticateToken, async (req, res) => {
         } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
-        if (medication_name !== undefined) updateData.medication_name = medication_name.trim();
+        if (medication_name !== undefined || req.body.label !== undefined) {
+            updateData.medication_name = (medication_name || req.body.label).trim();
+        }
         if (dosage !== undefined) updateData.dosage = dosage.trim();
-        if (instructions !== undefined) updateData.instructions = instructions;
+        if (instructions !== undefined) updateData.instructions = instructions ? instructions.trim() : null;
         if (reminder_times !== undefined) updateData.reminder_times = reminder_times;
         if (days_of_week !== undefined) updateData.days_of_week = days_of_week;
         if (start_date !== undefined) updateData.start_date = start_date;

@@ -198,3 +198,9 @@ export function sanitizeSearchQuery(query) {
     debug.log(`Sanitized search query: "${query}" -> "${sanitized}"`);
     return sanitized;
 }
+
+// Validate UUID format
+export function isValidUUID(uuid) {
+    if (!uuid || typeof uuid !== 'string' || uuid === 'undefined' || uuid === 'null') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid.trim());
+}

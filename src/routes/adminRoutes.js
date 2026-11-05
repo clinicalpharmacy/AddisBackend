@@ -3,6 +3,9 @@ import bcrypt from 'bcryptjs';
 import { supabase, supabaseAdmin } from '../config/supabase.js';
 import { authenticateToken, requireAdmin } from '../middleware/authMiddleware.js';
 
+import { processRegistration } from './paymentRoutes.js';
+import { calculateEndDate, isValidUUID } from '../utils/helpers.js';
+
 const router = express.Router();
 
 /**
@@ -372,6 +375,173 @@ router.get('/payments', authenticateToken, requireAdmin, async (req, res) => {
         res.json({ success: true, payments: data || [], total_revenue: total });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed' });
+    }
+});
+
+// Approve Payment
+router.post('/payments/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const paymentId = req.params.id;
+        const db = supabaseAdmin || supabase;
+        const { data: payment, error: pErr } = await db.from('payments').select('*').eq('id', paymentId).single();
+        if (pErr || !payment) {
+            return res.status(404).json({ success: false, error: 'Payment not found' });
+        }
+
+        const cleanEmail = payment.user_email?.trim()?.toLowerCase();
+        let user = null;
+        if (cleanEmail) {
+            const { data: foundUser } = await db.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
+            user = foundUser;
+        }
+
+        // If user not in DB yet (e.g. delayed registration payload)
+        if (!user && payment.gateway_response?.registration_payload) {
+            user = await processRegistration(payment.gateway_response.registration_payload, db);
+        }
+
+        const endDate = calculateEndDate(payment.plan_id || 'individual_monthly');
+
+        // If healthcare client and not in users table yet
+        if (!user && (cleanEmail?.includes('@hcc.addis-med.com') || payment.gateway_response?.is_healthcare_client)) {
+            try {
+                const clientId = payment.gateway_response?.healthcare_client_id || cleanEmail?.split('@')[0];
+                const rawPassword = payment.gateway_response?.client_password || 'healthcare123';
+                const hashedPassword = await bcrypt.hash(rawPassword, 10);
+                const userCountry = payment.gateway_response?.country || 'Ethiopia';
+
+                const { data: createdClient, error: clientErr } = await db.from('users').upsert([{
+                    email: cleanEmail,
+                    password_hash: hashedPassword,
+                    full_name: payment.user_name || `Healthcare Client ${clientId || ''}`.trim(),
+                    phone: payment.user_phone || '0000000000',
+                    role: 'healthcare_client',
+                    account_type: 'individual',
+                    country: userCountry,
+                    region: 'N/A',
+                    woreda: 'N/A',
+                    tin_number: 'N/A',
+                    email_verified: true,
+                    approved: true,
+                    subscription_status: 'active',
+                    subscription_plan: payment.plan_id,
+                    subscription_end_date: endDate,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                }], { onConflict: 'email' }).select().maybeSingle();
+
+                if (!clientErr && createdClient) {
+                    user = createdClient;
+                }
+            } catch (hcErr) {
+                console.error('⚠️ Healthcare client creation error on approval:', hcErr);
+            }
+        }
+
+        const paymentUserId = (user?.id && isValidUUID(user.id))
+            ? user.id
+            : (isValidUUID(payment.user_id) ? payment.user_id : null);
+
+        // Update payment record
+        await db.from('payments').update({
+            status: 'paid',
+            user_id: paymentUserId,
+            paid_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        }).eq('id', payment.id);
+
+        if (user) {
+            const isCompanyType = payment.account_type === 'company' || user.role === 'company_admin';
+
+            if (isCompanyType && user.company_id) {
+                // Update company
+                await db.from('companies').update({
+                    subscription_status: 'active',
+                    subscription_plan: payment.plan_id,
+                    subscription_end_date: endDate,
+                    updated_at: new Date().toISOString()
+                }).eq('id', user.company_id);
+
+                // Update company admin
+                await db.from('users').update({
+                    subscription_status: 'active',
+                    subscription_plan: payment.plan_id,
+                    subscription_end_date: endDate,
+                    approved: true,
+                    email_verified: true,
+                    updated_at: new Date().toISOString()
+                }).eq('company_id', user.company_id);
+
+                // Update company staff
+                await db.from('company_users').update({
+                    subscription_status: 'active',
+                    subscription_plan: payment.plan_id,
+                    subscription_end_date: endDate,
+                    updated_at: new Date().toISOString()
+                }).eq('company_id', user.company_id);
+            } else {
+                // Individual user
+                await db.from('users').update({
+                    subscription_status: 'active',
+                    subscription_plan: payment.plan_id,
+                    subscription_end_date: endDate,
+                    approved: true,
+                    email_verified: true,
+                    updated_at: new Date().toISOString()
+                }).eq('id', user.id);
+            }
+
+            // Record in subscriptions table
+            await db.from('subscriptions').insert([{
+                user_id: user.id,
+                company_id: user.company_id || null,
+                plan_id: payment.plan_id,
+                plan_name: payment.plan_name,
+                amount: payment.amount,
+                currency: payment.currency || 'ETB',
+                status: 'active',
+                payment_method: payment.payment_method || 'cbe',
+                tx_ref: payment.tx_ref,
+                start_date: new Date().toISOString(),
+                end_date: endDate,
+                created_at: new Date().toISOString()
+            }]);
+
+            // Commission if referred
+            if (user.referred_by_id) {
+                const commissionAmount = payment.amount * 0.02;
+                await db.from('commissions').insert([{
+                    user_id: user.referred_by_id,
+                    referred_user_id: user.id,
+                    amount: commissionAmount,
+                    payment_id: payment.id,
+                    status: 'pending',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                }]);
+            }
+        }
+
+        res.json({ success: true, message: 'Payment approved and subscription activated!' });
+    } catch (e) {
+        console.error('Failed to approve payment:', e);
+        res.status(500).json({ success: false, error: e.message || 'Failed to approve payment' });
+    }
+});
+
+// Reject Payment
+router.post('/payments/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const paymentId = req.params.id;
+        const db = supabaseAdmin || supabase;
+        await db.from('payments').update({
+            status: 'rejected',
+            updated_at: new Date().toISOString()
+        }).eq('id', paymentId);
+
+        res.json({ success: true, message: 'Payment rejected.' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 

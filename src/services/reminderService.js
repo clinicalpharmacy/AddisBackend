@@ -86,8 +86,8 @@ export async function sendTestNotification(userId) {
     const payload = {
         title: '🔔 Reminders are Active!',
         body: 'Your device is verified and connected to receive scheduled medication alerts.',
-        icon: '/pwa-192x192.png',
-        badge: '/pwa-192x192.png',
+        icon: '/logo.png',
+        badge: '/favicon-48x48.png',
         tag: 'device-verification',
         renotify: true,
         data: {
@@ -101,20 +101,11 @@ export async function sendTestNotification(userId) {
 
 /**
  * Check active medication schedules and send notifications for due doses.
- * Runs every minute in cron.
+ * Timezone-aware (defaults to Africa/Addis_Ababa UTC+3).
  */
 export async function checkAndSendDueReminders() {
     try {
         const now = new Date();
-        
-        // Format local HH:MM (also checking UTC in case user runs UTC server)
-        const currentHours = String(now.getHours()).padStart(2, '0');
-        const currentMinutes = String(now.getMinutes()).padStart(2, '0');
-        const currentTime = `${currentHours}:${currentMinutes}`;
-        
-        // Current day of week: 0 = Sun, 1 = Mon, ..., 6 = Sat
-        const currentDayOfWeek = now.getDay();
-        const currentDateStr = now.toISOString().split('T')[0];
 
         // Fetch all active schedules
         const { data: schedules, error } = await db
@@ -127,35 +118,81 @@ export async function checkAndSendDueReminders() {
         }
 
         for (const schedule of schedules) {
+            // Determine user timezone (default to Africa/Addis_Ababa UTC+3)
+            const tz = schedule.timezone || 'Africa/Addis_Ababa';
+            let localTime = '';
+            let localDate = '';
+            let localDayOfWeek = 0;
+
+            try {
+                const timeFmt = new Intl.DateTimeFormat('en-GB', {
+                    timeZone: tz,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+                localTime = timeFmt.format(now); // "HH:MM"
+
+                const dateFmt = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: tz,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit'
+                });
+                localDate = dateFmt.format(now); // "YYYY-MM-DD"
+
+                const dayFmt = new Intl.DateTimeFormat('en-US', {
+                    timeZone: tz,
+                    weekday: 'short'
+                });
+                const dayName = dayFmt.format(now);
+                const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+                localDayOfWeek = dayMap[dayName] ?? now.getDay();
+            } catch (e) {
+                // Fallback to UTC+3
+                const eatDate = new Date(now.getTime() + 3 * 3600 * 1000);
+                const h = String(eatDate.getUTCHours()).padStart(2, '0');
+                const m = String(eatDate.getUTCMinutes()).padStart(2, '0');
+                localTime = `${h}:${m}`;
+                localDate = eatDate.toISOString().split('T')[0];
+                localDayOfWeek = eatDate.getUTCDay();
+            }
+
             // Check start_date and end_date
-            if (schedule.start_date && schedule.start_date > currentDateStr) continue;
-            if (schedule.end_date && schedule.end_date < currentDateStr) continue;
+            if (schedule.start_date && schedule.start_date > localDate) continue;
+            if (schedule.end_date && schedule.end_date < localDate) continue;
 
             // Check days of week
-            const daysOfWeek = Array.isArray(schedule.days_of_week) ? schedule.days_of_week : [0,1,2,3,4,5,6];
-            if (!daysOfWeek.includes(currentDayOfWeek)) continue;
+            const daysOfWeek = Array.isArray(schedule.days_of_week) ? schedule.days_of_week : [0, 1, 2, 3, 4, 5, 6];
+            if (!daysOfWeek.includes(localDayOfWeek)) continue;
 
-            // Check reminder times
+            // Check reminder times (allow exact match or within 5 minutes tolerance)
             const reminderTimes = Array.isArray(schedule.reminder_times) ? schedule.reminder_times : [];
-            const isDueNow = reminderTimes.some(time => {
+            const [nowH, nowM] = localTime.split(':').map(Number);
+
+            const matchedTime = reminderTimes.find(time => {
                 if (typeof time !== 'string') return false;
-                // Match "HH:MM"
-                return time.startsWith(currentTime);
+                if (time.startsWith(localTime)) return true;
+                const [sH, sM] = time.split(':').map(Number);
+                if (!isNaN(sH) && !isNaN(sM) && !isNaN(nowH) && !isNaN(nowM)) {
+                    const diff = (nowH * 60 + nowM) - (sH * 60 + sM);
+                    return diff >= 0 && diff <= 5;
+                }
+                return false;
             });
 
-            if (!isDueNow) continue;
+            if (!matchedTime) continue;
 
-            // Check if already sent today for this time
+            // Check if already dispatched today for this scheduled time
             const { data: existingLog } = await db
                 .from('medication_reminder_logs')
                 .select('id')
                 .eq('schedule_id', schedule.id)
-                .eq('scheduled_date', currentDateStr)
-                .eq('scheduled_time', currentTime)
+                .eq('scheduled_date', localDate)
+                .eq('scheduled_time', matchedTime)
                 .maybeSingle();
 
             if (existingLog) {
-                // Already dispatched this reminder
                 continue;
             }
 
@@ -163,34 +200,38 @@ export async function checkAndSendDueReminders() {
             await db.from('medication_reminder_logs').insert({
                 schedule_id: schedule.id,
                 user_id: schedule.user_id,
-                scheduled_time: currentTime,
-                scheduled_date: currentDateStr,
+                scheduled_time: matchedTime,
+                scheduled_date: localDate,
                 status: 'sent'
             });
 
             // Dispatch Push Notification
+            const medName = schedule.medication_name || schedule.label || 'Medication';
+            const doseText = schedule.dosage ? `Dose: ${schedule.dosage}` : '';
+            const instructionText = schedule.instructions ? ` • ${schedule.instructions}` : '';
+
             const payload = {
-                title: `💊 Time for ${schedule.medication_name}`,
-                body: `Dose: ${schedule.dosage}${schedule.instructions ? ' • ' + schedule.instructions : ''}`,
-                icon: '/pwa-192x192.png',
-                badge: '/pwa-192x192.png',
-                tag: `reminder-${schedule.id}-${currentTime}`,
+                title: `💊 Time for ${medName}`,
+                body: `${doseText}${instructionText}`.trim() || 'It is time for your scheduled medication dose.',
+                icon: '/logo.png',
+                badge: '/favicon-48x48.png',
+                tag: `reminder-${schedule.id}-${matchedTime}`,
                 renotify: true,
                 requireInteraction: true,
                 data: {
                     scheduleId: schedule.id,
-                    medicationName: schedule.medication_name,
-                    dosage: schedule.dosage,
-                    scheduledTime: currentTime,
+                    medicationName: medName,
+                    dosage: schedule.dosage || '',
+                    scheduledTime: matchedTime,
                     url: '/reminders'
                 },
                 actions: [
-                    { action: 'take', title: '✅ Taken' },
-                    { action: 'snooze', title: '⏰ Snooze 15m' }
+                    { action: 'taken', title: '✅ Taken' },
+                    { action: 'open', title: '👀 View' }
                 ]
             };
 
-            console.log(`📢 Dispatching reminder for "${schedule.medication_name}" to user ${schedule.user_id}`);
+            console.log(`📢 Dispatching reminder for "${medName}" (${matchedTime}) to user ${schedule.user_id}`);
             await sendPushToUser(schedule.user_id, payload);
         }
     } catch (err) {
