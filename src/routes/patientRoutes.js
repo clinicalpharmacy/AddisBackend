@@ -199,7 +199,7 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
 
-        if (userRole !== 'admin') {
+        if (userRole !== 'admin' && userRole !== 'superadmin') {
             const accessibleUserIds = await getUserAccessibleData(userId, userRole, userCompanyId, userAccountType);
             if (!accessibleUserIds.includes(data.user_id)) {
                 const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();

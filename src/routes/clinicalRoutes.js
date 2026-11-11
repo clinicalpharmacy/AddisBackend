@@ -10,10 +10,10 @@ const router = express.Router();
  */
 async function resolvePatientId(identifier) {
     if (!identifier) return null;
-    
+
     const db = supabaseAdmin || supabase;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
-    
+
     // prioritze checking if it's already a valid primary ID (UUID or numeric)
     if (isUUID) return identifier;
 
@@ -102,7 +102,7 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         }
 
         const hasAccess = await verifyClinicalAccess(resolvedId, req);
-        
+
         // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
         if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && userRole !== 'superadmin' && !req.authorizedSupport)) {
             // Note: verifyClinicalAccess will handle the base ownership/company/support check.
@@ -150,7 +150,7 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
         if (!resolvedId || !(await verifyClinicalAccess(resolvedId, req))) {
             return res.json({ success: true, assessments: [] });
         }
-        
+
         // Restriction for individuals - still block if they don't have clinical access (though verify already checked)
         if (userAccountType === 'individual' && userRole !== 'admin' && userRole !== 'superadmin' && !(await verifyClinicalAccess(resolvedId, req))) {
             return res.status(403).json({ success: false, error: 'Access denied' });
@@ -256,7 +256,7 @@ router.get('/plans/patient/:patientCode', authenticateToken, async (req, res) =>
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) return res.json({ success: true, plans: [] });
 
@@ -303,12 +303,12 @@ router.post('/outcomes', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Access denied for individual subscribers' });
         }
         const resolvedId = await resolvePatientId(req.body.patient_id);
-        const item = { 
-            ...req.body, 
-            patient_id: resolvedId, 
-            user_id: req.user.userId, 
-            created_at: new Date().toISOString(), 
-            updated_at: new Date().toISOString() 
+        const item = {
+            ...req.body,
+            patient_id: resolvedId,
+            user_id: req.user.userId,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
         };
         delete item.patient_code;
         const { data, error } = await supabase.from('patient_outcomes').insert([item]).select().single();
@@ -331,7 +331,7 @@ router.get('/outcomes/patient/:patientCode', authenticateToken, async (req, res)
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) return res.json({ success: true, outcomes: [] });
 
@@ -454,14 +454,14 @@ router.get('/costs/patient/:patientCode', authenticateToken, async (req, res) =>
         }
         const userId = req.user.userId;
         const userCompanyId = req.user.company_id;
- 
+
         // 🔐 Resolve identifier and enforce UUID for this clinical table
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
 
         if (!resolvedId || !isUUID) {
             // Return empty if not found or not a UUID (numeric legacy IDs are incompatible with this clinical table)
-            return res.json({ success: true, costs: [] }); 
+            return res.json({ success: true, costs: [] });
         }
 
         let query = supabase.from('cost_analyses').select('*').eq('patient_id', resolvedId);
@@ -526,7 +526,7 @@ router.get('/clinical-rules', authenticateToken, async (req, res) => {
 router.post('/quick-safety', authenticateToken, async (req, res) => {
     try {
         const { medication, medications: medList } = req.body;
-        
+
         const targetDb = supabaseAdmin || supabase;
         const { data: rules, error } = await targetDb
             .from('clinical_rules')
@@ -716,12 +716,12 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 if (!cond) return null;
 
                 if (cond.all) {
-                    let allMatchSets = [ [] ];
+                    let allMatchSets = [[]];
 
                     for (const child of cond.all) {
                         const childRes = evaluate(child);
                         if (!childRes) return null; // If any fails, 'all' fails
-                        
+
                         let newMatchSets = [];
                         for (const existingSet of allMatchSets) {
                             for (const childSet of childRes) {
@@ -772,7 +772,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
                 }
 
                 // For non-medication facts (age, labs, etc.), assume true for quick safety check
-                return [ [] ];
+                return [[]];
             };
 
             const result = evaluate(parsedCondition);
@@ -780,11 +780,11 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             const uniqueFormattedCombinations = [];
             const seenCombos = new Set();
-            
+
             result.forEach(combination => {
                 if (combination.length < 2) return;
                 const formattedCombo = combination.map(med => capitalizeMed(med)).sort();
-                
+
                 const comboKey = formattedCombo.join('|');
                 if (!seenCombos.has(comboKey)) {
                     seenCombos.add(comboKey);
@@ -801,8 +801,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const op = f.operator;
             const val = Number(f.value);
             return (op === '>=' && val >= 60) || (op === '>' && val >= 59) ||
-                   (op === 'greaterThan' && val >= 59) || (op === 'greaterThanOrEqual' && val >= 60) ||
-                   (op === 'greaterThanInclusive' && val >= 60);
+                (op === 'greaterThan' && val >= 59) || (op === 'greaterThanOrEqual' && val >= 60) ||
+                (op === 'greaterThanInclusive' && val >= 60);
         };
 
         // Helper: is an operator a "neonate/pediatric" check? (age < 2, age <= 12, etc.)
@@ -811,7 +811,7 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const op = f.operator;
             const val = Number(f.value);
             return (op === '<' && val <= 18) || (op === '<=' && val <= 18) ||
-                   (op === 'lessThan' && val <= 18) || (op === 'lessThanOrEqual' && val <= 18);
+                (op === 'lessThan' && val <= 18) || (op === 'lessThanOrEqual' && val <= 18);
         };
 
         // Helper: Check if two medications match (including partial matches)
@@ -831,28 +831,28 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
         const isInteractionRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType.includes('drug_interaction') || 
-                   lowerName.includes('interaction') ||
-                   lowerName.includes('drug interaction');
+            return lowerType.includes('drug_interaction') ||
+                lowerName.includes('interaction') ||
+                lowerName.includes('drug interaction');
         };
 
         // Helper: Check if a rule is an IV incompatibility rule
         const isIVIncompatibilityRule = (rule) => {
             const lowerName = String(rule.rule_name).toLowerCase();
             const lowerType = String(rule.rule_type).toLowerCase();
-            return lowerType === 'iv incompatibility' || 
-                   lowerName.includes('iv drug incompatibility') || 
-                   lowerName.includes('iv incompatibility') ||
-                   lowerName.includes('iv incompat');
+            return lowerType === 'iv incompatibility' ||
+                lowerName.includes('iv drug incompatibility') ||
+                lowerName.includes('iv incompatibility') ||
+                lowerName.includes('iv incompat');
         };
 
         // Parse each rule
         rules.forEach(rule => {
             const cond = rule.rule_condition;
-            
+
             // Skip rules that don't have a condition
             if (!cond) return;
-            
+
             // Check if the rule contains any of the searched medications
             const hasAnyMed = hasMedication(cond);
             if (!hasAnyMed) return;
@@ -863,13 +863,13 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
             const rec = rule.rule_action?.recommendation_client || rule.rule_action?.recommendation || '';
             const detail = (rec ? `${msg} ${rec}` : msg);
             const status = (severity === 'critical' || severity === 'high') ? 'Contraindicated' : 'Caution';
-            
+
             const lowerRuleName = String(rule.rule_name).toLowerCase();
             const lowerRuleType = String(rule.rule_type).toLowerCase();
 
             // Get ONLY the searched medications that match this rule
             const matchedSearchedMeds = getMatchingSearchedMeds(cond);
-            const capitalizedMeds = matchedSearchedMeds.map(m => 
+            const capitalizedMeds = matchedSearchedMeds.map(m =>
                 m.charAt(0).toUpperCase() + m.slice(1)
             );
             const medsStr = capitalizedMeds.length > 0 ? `[${capitalizedMeds.join(', ')}] ` : '';
@@ -951,8 +951,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Check for pregnancy - show ONLY searched medications in brackets
             if (lowerRuleType.includes('pregnancy') || lowerRuleName.includes('pregnancy') || allFacts.some(f => f.fact === 'pregnancy' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('pregnancy')))) {
-                safetyProfile.categories.pregnancy = { 
-                    status, 
+                safetyProfile.categories.pregnancy = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
@@ -960,8 +960,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Check for lactation - show ONLY searched medications in brackets
             if (lowerRuleType.includes('lactation') || lowerRuleType.includes('breastfeeding') || lowerRuleName.includes('lactation') || lowerRuleName.includes('breastfeeding') || allFacts.some(f => f.fact === 'lactation' || (f.fact === 'conditions' && String(f.value).toLowerCase().includes('lactation')))) {
-                safetyProfile.categories.lactation = { 
-                    status, 
+                safetyProfile.categories.lactation = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
@@ -969,8 +969,8 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Check for elderly - show ONLY searched medications in brackets
             if (lowerRuleType.includes('elderly') || lowerRuleName.includes('elderly') || lowerRuleName.includes('eldery') || allFacts.some(f => isElderlyCheck(f))) {
-                safetyProfile.categories.elderly = { 
-                    status, 
+                safetyProfile.categories.elderly = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
@@ -978,45 +978,45 @@ router.post('/quick-safety', authenticateToken, async (req, res) => {
 
             // Check for neonates/pediatrics - show ONLY searched medications in brackets
             if (lowerRuleType.includes('neonate') || lowerRuleType.includes('pediatric') || lowerRuleType.includes('infant') || lowerRuleName.includes('neonate') || lowerRuleName.includes('pediatric') || lowerRuleName.includes('infant') || allFacts.some(f => isNeonateCheck(f))) {
-                safetyProfile.categories.neonate = { 
-                    status, 
+                safetyProfile.categories.neonate = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
             // Check for kidney failure - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f => 
+            if (lowerRuleType.includes('renal') || lowerRuleType.includes('kidney') || lowerRuleName.includes('renal') || lowerRuleName.includes('kidney') || allFacts.some(f =>
                 f.fact === 'labs.creatinine_clearance' || f.fact === 'labs.egfr' || f.fact === 'labs.serum_creatinine' ||
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) || 
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('renal')) ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('kidney')) ||
                 (f.fact === 'conditions' && String(f.value).toLowerCase().includes('renal')) ||
                 (f.fact === 'conditions' && String(f.value).toLowerCase().includes('kidney'))
             )) {
-                safetyProfile.categories.kidney_failure = { 
-                    status, 
+                safetyProfile.categories.kidney_failure = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
 
             // Check for liver failure - show ONLY searched medications in brackets
-            if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f => 
+            if (lowerRuleType.includes('liver') || lowerRuleType.includes('hepatic') || lowerRuleName.includes('liver') || lowerRuleName.includes('hepatic') || lowerRuleName.includes('cirrhosis') || allFacts.some(f =>
                 f.fact === 'labs.total_bilirubin' || f.fact === 'labs.ast' || f.fact === 'labs.alt' || f.fact === 'labs.inr' ||
-                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) || 
+                (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('liver')) ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('hepatic')) ||
                 (f.fact === 'diagnosis' && String(f.value).toLowerCase().includes('cirrhosis')) ||
                 (f.fact === 'conditions' && String(f.value).toLowerCase().includes('liver')) ||
                 (f.fact === 'conditions' && String(f.value).toLowerCase().includes('hepatic'))
             )) {
-                safetyProfile.categories.liver_failure = { 
-                    status, 
+                safetyProfile.categories.liver_failure = {
+                    status,
                     details: medsStr + detail,
                     medications: matchedSearchedMeds
                 };
             }
         });
-        
+
         // Remove duplicates from interactions and incompatibilities
         safetyProfile.major_interactions = [...new Set(safetyProfile.major_interactions)];
         safetyProfile.iv_incompatibility = [...new Set(safetyProfile.iv_incompatibility)];
@@ -1044,7 +1044,7 @@ router.get('/medication-history/patient/:patientCode', authenticateToken, async 
         const userRole = req.user.role;
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
- 
+
         // 1. Verify access to the patient first using resolved ID
         const resolvedId = await resolvePatientId(patientCode);
         if (!resolvedId) {
@@ -1120,7 +1120,7 @@ router.put('/medications/:id', authenticateToken, async (req, res) => {
         delete updates.patient_code;
         // Now that patient_id is added, we allow it to be updated or persisted
         // delete updates.patient_id; 
-        
+
         // Resolve patient context (Code lookups removed as patient_code does not exist)
         if (updates.patient_id) {
             // Patient ID already provided
@@ -1349,7 +1349,7 @@ router.get('/reconciliations/patient/:patientCode', authenticateToken, async (re
         const userRole = req.user.role;
         const userCompanyId = req.user.company_id;
         const userAccountType = req.user.account_type;
- 
+
         // 🔐 Resolve and enforce UUID type
         const resolvedId = await resolvePatientId(patientCode);
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedId);
