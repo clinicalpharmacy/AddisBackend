@@ -80,12 +80,6 @@ app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/patients', patientRoutes);
-
-// Support pharmacy plans at both /api/pharmacy-plans and /api/patients/pharmacy-plans
-app.use('/api/pharmacy-plans', (req, res, next) => {
-    req.url = '/pharmacy-plans' + (req.url === '/' ? '' : req.url);
-    return patientRoutes(req, res, next);
-});
 app.use('/api/company', companyRoutes);
 app.use('/api/debug', debugRoutes);
 app.use('/api/performance', performanceRoutes);
