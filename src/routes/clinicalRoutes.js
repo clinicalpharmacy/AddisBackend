@@ -104,10 +104,10 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
         const hasAccess = await verifyClinicalAccess(resolvedId, req);
         
         // Restriction: Individual subscribers cannot access DRN unless they have authorized support access to this patient
-        if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && !req.authorizedSupport)) {
+        if (!hasAccess || (userAccountType === 'individual' && userRole !== 'admin' && userRole !== 'superadmin' && !req.authorizedSupport)) {
             // Note: verifyClinicalAccess will handle the base ownership/company/support check.
             // We only block individuals here if they aren't authorized or it's a general restriction.
-            if (userAccountType === 'individual' && userRole !== 'admin' && !hasAccess) {
+            if (userAccountType === 'individual' && userRole !== 'admin' && userRole !== 'superadmin' && !hasAccess) {
                 return res.status(403).json({ success: false, error: 'DRN assessment is not available for individual subscribers' });
             }
             if (!hasAccess) {
@@ -129,7 +129,7 @@ router.post('/assessments/drn', authenticateToken, async (req, res) => {
             updated_at: new Date().toISOString()
         };
 
-        const { data, error } = await supabase.from('drn_assessments').insert([assessmentData]).select().single();
+        const { data, error } = await (supabaseAdmin || supabase).from('drn_assessments').insert([assessmentData]).select().single();
         if (error) throw error;
         res.json({ success: true, message: 'Saved', assessment: data });
     } catch (e) {
@@ -152,11 +152,11 @@ router.get('/assessments/patient/:patientCode', authenticateToken, async (req, r
         }
         
         // Restriction for individuals - still block if they don't have clinical access (though verify already checked)
-        if (userAccountType === 'individual' && userRole !== 'admin' && !(await verifyClinicalAccess(resolvedId, req))) {
+        if (userAccountType === 'individual' && userRole !== 'admin' && userRole !== 'superadmin' && !(await verifyClinicalAccess(resolvedId, req))) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
-        let query = supabase.from('drn_assessments').select('*').eq('patient_id', resolvedId);
+        let query = (supabaseAdmin || supabase).from('drn_assessments').select('*').eq('patient_id', resolvedId);
 
         const { data, error } = await query.order('created_at', { ascending: false });
         if (error) throw error;
