@@ -26,15 +26,15 @@ router.get('/count', authenticateToken, async (req, res) => {
 
         let limit = 'unlimited';
         let limitMessage = '';
-        
+
         if (userRole === 'admin' || userRole === 'superadmin') {
             limit = 'unlimited';
             limitMessage = 'Administrators have unlimited patient access.';
-        } 
+        }
         else if (userAccountType === 'company' || req.user.company_id) {
             limit = 'unlimited';
             limitMessage = 'Company users have unlimited patient access.';
-        } 
+        }
         else if (userAccountType === 'individual') {
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
                 limit = 5;
@@ -79,7 +79,7 @@ router.get('/', authenticateToken, async (req, res) => {
         let query = db.from('patients').select('*');
 
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        
+
         const { data: approvedRequests } = await db
             .from('access_requests')
             .select('patient_id, encrypted_key')
@@ -88,25 +88,25 @@ router.get('/', authenticateToken, async (req, res) => {
             .gt('approved_at', twentyFourHoursAgo);
 
         const approvedPatientIds = approvedRequests?.map(r => r.patient_id) || [];
-        
+
         const userEmail = req.user.email;
         const activeIds = [...new Set([...(accessibleUserIds || []), userId, userEmail])];
-        
-        const validActiveIds = activeIds.filter(id => 
+
+        const validActiveIds = activeIds.filter(id =>
             /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || /^\d+$/.test(id)
         );
-        
+
         if (validActiveIds.length === 0) {
             return res.json({ success: true, patients: [], message: "No valid user IDs identified for access check" });
         }
 
         let ownerConditions = validActiveIds.map(id => `user_id.eq.${id}`).join(',');
         let sharedCondition = (approvedPatientIds.length > 0) ? `,id.in.(${approvedPatientIds.join(',')})` : '';
-        
+
         query = query.or(`${ownerConditions}${sharedCondition}`);
-        
+
         const { data: patients, error: fetchError } = await query.order('created_at', { ascending: false });
-        
+
         if (fetchError) {
             console.error('❌ [DATABASE] Patient retrieval failed:', fetchError.message);
             const { data: fallbackPatients, error: fallbackError } = await db.from('patients').select('*').eq('user_id', userId).order('created_at', { ascending: false });
@@ -116,19 +116,19 @@ router.get('/', authenticateToken, async (req, res) => {
 
         const sanitizedPatients = (patients || []).map(p => {
             const request = approvedRequests?.find(r => r.patient_id === p.id);
-            return { 
-                ...p, 
+            return {
+                ...p,
                 shared_encryption_key: request?.encrypted_key || null,
                 _is_shared: !!request
             };
         });
 
-        return res.json({ 
-            success: true, 
+        return res.json({
+            success: true,
             patients: sanitizedPatients,
             count: sanitizedPatients.length,
-            access_info: { 
-                role: userRole, 
+            access_info: {
+                role: userRole,
                 combined: true,
                 debug_userId: userId,
                 active_ids: validActiveIds
@@ -153,7 +153,7 @@ router.get('/my-patients', authenticateToken, async (req, res) => {
         const userRole = req.user.role;
         const sanitizedPatients = patients?.map(p => {
             let processedPatient = { ...p };
-            
+
             if (userAccountType === 'individual' && userRole !== 'admin' && p.user_id !== userId) {
                 if (processedPatient.full_name && processedPatient.full_name.startsWith('Patient PAT')) {
                     processedPatient.full_name = 'MR profile';
@@ -235,11 +235,11 @@ router.get('/:identifier', authenticateToken, async (req, res) => {
             shared_encryption_key: accessGrant?.encrypted_key || null,
             _is_shared: !!accessGrant
         };
-        
-        res.json({ 
-            success: true, 
+
+        res.json({
+            success: true,
             patient: enrichedPatient,
-            owner_salt: ownerSalt 
+            owner_salt: ownerSalt
         });
 
     } catch (error) {
@@ -260,7 +260,7 @@ router.post('/', authenticateToken, async (req, res) => {
         const patientData = req.body;
 
         const isIndividual = userAccountType === 'individual' && !req.user.company_id;
-        
+
         if (!isIndividual) {
             if (!patientData.full_name) {
                 return res.status(400).json({ success: false, error: 'Patient name is required' });
@@ -279,7 +279,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
             let limit = 5;
             let limitMessage = 'Individual subscription allows up to 5 MRs. Please upgrade to Company subscription for unlimited access.';
-            
+
             if (userRole === 'pharmacist' || userRole === 'pharmacy_student') {
                 limit = 5;
                 limitMessage = 'As a pharmacist or pharmacy student, you can manage up to 5 MRs.';
@@ -327,9 +327,9 @@ router.post('/', authenticateToken, async (req, res) => {
 
         if (error) {
             console.error('❌ Database error saving patient:', error);
-            return res.status(500).json({ 
-                success: false, 
-                error: `Database: ${error.message} (Code: ${error.code})` 
+            return res.status(500).json({
+                success: false,
+                error: `Database: ${error.message} (Code: ${error.code})`
             });
         }
 
@@ -340,7 +340,7 @@ router.post('/', authenticateToken, async (req, res) => {
             }
             return res.status(201).json({ success: true, message: 'Created', patient: processed });
         }
- 
+
         res.status(201).json({ success: true, message: 'Created', patient: data });
     } catch (e) {
         console.error('❌ Server exception in create patient:', e);
@@ -375,12 +375,12 @@ router.put('/:identifier', authenticateToken, async (req, res) => {
         });
 
         const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
-        
+
         if (error) {
             console.error('❌ Database error updating patient:', error);
-            return res.status(500).json({ 
-                success: false, 
-                error: `Database: ${error.message} (Code: ${error.code})` 
+            return res.status(500).json({
+                success: false,
+                error: `Database: ${error.message} (Code: ${error.code})`
             });
         }
 
@@ -414,12 +414,12 @@ router.put('/code/:patientCode', authenticateToken, async (req, res) => {
         ['id', 'user_id', 'created_at', 'created_by', 'patient_code'].forEach(k => delete updates[k]);
 
         const { data, error } = await db.from('patients').update(updates).eq('id', existing.id).select().single();
-        
+
         if (error) {
             console.error('❌ Database error updating patient by code:', error);
-            return res.status(500).json({ 
-                success: false, 
-                error: `Database: ${error.message} (Code: ${error.code})` 
+            return res.status(500).json({
+                success: false,
+                error: `Database: ${error.message} (Code: ${error.code})`
             });
         }
 
@@ -445,7 +445,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 
         const isAdmin = userRole === 'admin' || userRole === 'superadmin';
         const isOwner = patient.user_id === userId;
-        
+
         const accessibleUserIds = await getUserAccessibleData(userId, userRole, req.user.company_id, req.user.account_type);
         const hasPermission = isAdmin || isOwner || (accessibleUserIds && accessibleUserIds.includes(patient.user_id));
 
@@ -472,8 +472,8 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         ];
 
         console.log(`🗑️ [Delete Patient] Cleaning up related data for patient ${patientId}...`);
-        
-        await Promise.all(relatedTables.map(table => 
+
+        await Promise.all(relatedTables.map(table =>
             db.from(table).delete().eq('patient_id', patientId)
         ));
 
@@ -546,10 +546,10 @@ const getPatientId = async (identifier) => {
                 .select('id')
                 .eq('id', parseInt(idStr))
                 .maybeSingle();
-            
+
             if (!error && data) return data.id;
         }
-        
+
         return null;
     } catch (error) {
         console.error('Error finding patient:', error);
@@ -568,7 +568,7 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
 
         // Get patient ID from the identifier
         const patientId = await getPatientId(patientIdentifier);
-        
+
         if (!patientId) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
@@ -626,29 +626,29 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
 
         // Validate required fields
         if (!patient_code) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'patient_code is required' 
+            return res.status(400).json({
+                success: false,
+                error: 'patient_code is required'
             });
         }
-        
+
         if (!goals || !goals.trim()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Pharmacy Assessment is required' 
+            return res.status(400).json({
+                success: false,
+                error: 'Pharmacy Assessment is required'
             });
         }
-        
+
         if (!notes || !notes.trim()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Plan of Action is required' 
+            return res.status(400).json({
+                success: false,
+                error: 'Plan of Action is required'
             });
         }
 
         // Get patient ID from the code
         const patientId = await getPatientId(patient_code);
-        
+
         if (!patientId) {
             return res.status(404).json({ success: false, error: 'Patient not found' });
         }
