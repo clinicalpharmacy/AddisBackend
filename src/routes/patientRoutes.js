@@ -522,26 +522,33 @@ router.get('/search/:query', authenticateToken, async (req, res) => {
 
 // Helper function to get patient ID from code or ID
 const getPatientId = async (identifier) => {
+    if (!identifier) return null;
+    const db = supabaseAdmin || supabase;
+    const idStr = String(identifier).trim();
     try {
-        // If identifier is numeric, try as ID first
-        if (/^\d+$/.test(identifier)) {
-            const { data, error } = await supabase
+        // Check if it's a UUID
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
+
+        if (isUUID) {
+            // Look up patient by user_id (UUID)
+            const { data, error } = await db
                 .from('patients')
                 .select('id')
-                .eq('id', parseInt(identifier))
+                .eq('user_id', idStr)
+                .maybeSingle();
+            if (!error && data) return data.id;
+        }
+
+        // If identifier is numeric, try as ID
+        if (/^\d+$/.test(idStr)) {
+            const { data, error } = await db
+                .from('patients')
+                .select('id')
+                .eq('id', parseInt(idStr))
                 .maybeSingle();
             
             if (!error && data) return data.id;
         }
-        
-        // Try as patient_code
-        const { data, error } = await supabase
-            .from('patients')
-            .select('id')
-            .eq('patient_code', identifier)
-            .maybeSingle();
-        
-        if (!error && data) return data.id;
         
         return null;
     } catch (error) {
@@ -553,9 +560,11 @@ const getPatientId = async (identifier) => {
 // Get pharmacy plans for a patient
 router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, async (req, res) => {
     try {
+        const db = supabaseAdmin || supabase;
         const { patientIdentifier } = req.params;
         const userId = req.user.userId;
         const userRole = req.user.role;
+        const identifierStr = String(patientIdentifier).trim();
 
         // Get patient ID from the identifier
         const patientId = await getPatientId(patientIdentifier);
@@ -565,7 +574,7 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
         }
 
         // Verify patient access
-        const { data: patient, error: patientError } = await supabase
+        const { data: patient, error: patientError } = await db
             .from('patients')
             .select('user_id')
             .eq('id', patientId)
@@ -576,9 +585,9 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
         }
 
         // Check permission
-        if (userRole !== 'admin' && patient.user_id !== userId) {
+        if (userRole !== 'admin' && userRole !== 'superadmin' && patient.user_id !== userId) {
             const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            const { data: access } = await supabase
+            const { data: access } = await db
                 .from('access_requests')
                 .select('id')
                 .eq('patient_id', patientId)
@@ -592,11 +601,11 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
             }
         }
 
-        // Fetch pharmacy plans
-        const { data: plans, error } = await supabase
+        // Fetch pharmacy plans - table uses patient_code column (stores patient ID as string)
+        const { data: plans, error } = await db
             .from('pharmacy_assistance_plans')
             .select('*')
-            .eq('patient_id', patientId)
+            .or(`patient_code.eq.${patientId},patient_code.eq.${identifierStr}`)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
@@ -611,6 +620,7 @@ router.get('/pharmacy-plans/patient/:patientIdentifier', authenticateToken, asyn
 // Create new pharmacy assistance plan
 router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
     try {
+        const db = supabaseAdmin || supabase;
         const userId = req.user.userId;
         const { patient_code, plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
 
@@ -644,7 +654,7 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
         }
 
         // Verify patient access
-        const { data: patient, error: patientError } = await supabase
+        const { data: patient, error: patientError } = await db
             .from('patients')
             .select('user_id')
             .eq('id', patientId)
@@ -655,9 +665,9 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
         }
 
         // Check permission
-        if (req.user.role !== 'admin' && patient.user_id !== userId) {
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && patient.user_id !== userId) {
             const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            const { data: access } = await supabase
+            const { data: access } = await db
                 .from('access_requests')
                 .select('id')
                 .eq('patient_id', patientId)
@@ -671,9 +681,9 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
             }
         }
 
-        // Create the plan
+        // Create the plan - table uses patient_code column (stores patient ID as string)
         const planData = {
-            patient_id: patientId,
+            patient_code: String(patientId),
             user_id: userId,
             plan_type: plan_type || null,
             goals: goals.trim(),
@@ -685,7 +695,7 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
             updated_at: new Date()
         };
 
-        const { data, error } = await supabase
+        const { data, error } = await db
             .from('pharmacy_assistance_plans')
             .insert([planData])
             .select()
@@ -706,12 +716,13 @@ router.post('/pharmacy-plans', authenticateToken, async (req, res) => {
 // Update pharmacy plan
 router.put('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
     try {
+        const db = supabaseAdmin || supabase;
         const { planId } = req.params;
         const userId = req.user.userId;
         const { plan_type, goals, medications, monitoring, follow_up, notes } = req.body;
 
         // Get existing plan
-        const { data: existingPlan, error: fetchError } = await supabase
+        const { data: existingPlan, error: fetchError } = await db
             .from('pharmacy_assistance_plans')
             .select('*')
             .eq('id', planId)
@@ -722,7 +733,7 @@ router.put('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
         }
 
         // Check permission
-        if (req.user.role !== 'admin' && existingPlan.user_id !== userId) {
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && existingPlan.user_id !== userId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
@@ -737,7 +748,7 @@ router.put('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
             updated_at: new Date()
         };
 
-        const { data, error } = await supabase
+        const { data, error } = await db
             .from('pharmacy_assistance_plans')
             .update(updates)
             .eq('id', planId)
@@ -756,11 +767,12 @@ router.put('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
 // Delete pharmacy plan
 router.delete('/pharmacy-plans/:planId', authenticateToken, async (req, res) => {
     try {
+        const db = supabaseAdmin || supabase;
         const { planId } = req.params;
         const userId = req.user.userId;
 
         // Check permission
-        const { data: plan, error: fetchError } = await supabase
+        const { data: plan, error: fetchError } = await db
             .from('pharmacy_assistance_plans')
             .select('user_id')
             .eq('id', planId)
@@ -770,12 +782,12 @@ router.delete('/pharmacy-plans/:planId', authenticateToken, async (req, res) => 
             return res.status(404).json({ success: false, error: 'Plan not found' });
         }
 
-        if (req.user.role !== 'admin' && plan.user_id !== userId) {
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && plan.user_id !== userId) {
             return res.status(403).json({ success: false, error: 'Access denied' });
         }
 
         // Delete plan
-        const { error } = await supabase
+        const { error } = await db
             .from('pharmacy_assistance_plans')
             .delete()
             .eq('id', planId);
