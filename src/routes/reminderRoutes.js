@@ -12,51 +12,26 @@ const router = express.Router();
 const db = supabaseAdmin || supabase;
 
 /* ─────────────────────────────────────────────────────────────
- * PRIVACY MODEL (unchanged)
+ * DATA TRANSFORM
  * ───────────────────────────────────────────────────────────── */
-const LABEL_RE = /^[A-Z]{1,3}$/;
-
 const toScheduleResponse = (row) => {
-    const { medication_name, dosage, instructions, ...rest } = row;
-    const isLabel = LABEL_RE.test(String(medication_name || '').toUpperCase());
+    if (!row) return null;
     return {
-        ...rest,
-        label: medication_name ?? null,
-        ...(isLabel ? {} : { dosage: dosage ?? null, instructions: instructions ?? null })
+        ...row,
+        medication_name: row.medication_name || '',
+        name: row.medication_name || '',
+        label: row.medication_name || '',
+        dosage: row.dosage || '',
+        instructions: row.instructions || ''
     };
 };
 
 /* ─────────────────────────────────────────────────────────────
- * ROLE GATE — Reminders are for healthcare clients & admins only
+ * ROLE GATE — Allow authenticated users
  * ───────────────────────────────────────────────────────────── */
-const REMINDER_ALLOWED_ROLES = ['admin', 'healthcare_client'];
-
 const requireReminderAccess = async (req, res, next) => {
-    try {
-        let role = req.user?.role;
-
-        if (!role) {
-            const { data, error } = await db
-                .from('users')
-                .select('role')
-                .eq('id', req.user.userId)
-                .single();
-            if (error) throw error;
-            role = data?.role;
-            if (role) req.user.role = role;
-        }
-
-        if (!REMINDER_ALLOWED_ROLES.includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Medication reminders are available only to healthcare clients and administrators.'
-            });
-        }
-        next();
-    } catch (err) {
-        console.error('Error verifying reminder access:', err.message);
-        res.status(500).json({ success: false, error: 'Failed to verify access' });
-    }
+    // All authenticated users are permitted to manage their medication reminders
+    next();
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -131,12 +106,23 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
     try {
         const userId = req.user.userId;
-        const { label, reminder_times, days_of_week, start_date, end_date } = req.body;
+        const {
+            label,
+            medication_name,
+            name,
+            dosage,
+            instructions,
+            reminder_times,
+            days_of_week,
+            start_date,
+            end_date
+        } = req.body;
 
-        if (!label || !LABEL_RE.test(String(label).toUpperCase())) {
+        const medName = (medication_name || name || label || '').trim();
+        if (!medName) {
             return res.status(400).json({
                 success: false,
-                error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA). Medication name/dosage are never stored.'
+                error: 'Medication name is required.'
             });
         }
 
@@ -147,9 +133,9 @@ router.post('/', async (req, res) => {
             .from('medication_schedules')
             .insert({
                 user_id: userId,
-                medication_name: String(label).toUpperCase(),
-                dosage: '',
-                instructions: null,
+                medication_name: medName,
+                dosage: (dosage || '').trim(),
+                instructions: (instructions || '').trim() || null,
                 reminder_times: times,
                 days_of_week: days,
                 start_date: start_date || new Date().toISOString().split('T')[0],
@@ -167,7 +153,7 @@ router.post('/', async (req, res) => {
         res.json({
             success: true,
             schedule: toScheduleResponse(data),
-            message: 'Medication reminder created (label only; name/dosage/instructions stay on device)'
+            message: 'Medication reminder created successfully'
         });
     } catch (err) {
         console.error('Error creating reminder:', err.message);
@@ -179,15 +165,26 @@ router.put('/:id', async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        const { label, reminder_times, days_of_week, start_date, end_date, is_active } = req.body;
+        const {
+            label,
+            medication_name,
+            name,
+            dosage,
+            instructions,
+            reminder_times,
+            days_of_week,
+            start_date,
+            end_date,
+            is_active
+        } = req.body;
 
         const updateData = { updated_at: new Date().toISOString() };
-        if (label !== undefined) {
-            if (!LABEL_RE.test(String(label).toUpperCase())) {
-                return res.status(400).json({ success: false, error: 'Label must be 1–3 uppercase letters (e.g. A, B, AA).' });
-            }
-            updateData.medication_name = String(label).toUpperCase();
+        const medName = medication_name !== undefined ? medication_name : (name !== undefined ? name : label);
+        if (medName !== undefined) {
+            updateData.medication_name = String(medName).trim();
         }
+        if (dosage !== undefined) updateData.dosage = String(dosage).trim();
+        if (instructions !== undefined) updateData.instructions = String(instructions).trim() || null;
         if (reminder_times !== undefined) updateData.reminder_times = reminder_times;
         if (days_of_week !== undefined) updateData.days_of_week = days_of_week;
         if (start_date !== undefined) updateData.start_date = start_date;
