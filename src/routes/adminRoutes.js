@@ -236,6 +236,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
             otherStudents,
             otherHealthProfessionals,
             labs,
+            companyAdmins,
+            systemAdmins,
             blocked,
             clients
         ] = await Promise.all([
@@ -252,6 +254,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'other_health_science_student'),
             supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer']),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'company_admin'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['admin', 'superadmin']),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_blocked', true),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'healthcare_client')
         ]);
@@ -283,6 +287,8 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 other_health_science_student_count: otherStudents.count || 0,
                 other_health_professionals_count: otherHealthProfessionals.count || 0,
                 others_count: otherHealthProfessionals.count || 0,
+                company_admin_count: companyAdmins.count || 0,
+                admin_count: systemAdmins.count || 0,
                 laboratory_count: labs.count || 0,
                 healthcare_client_count: clients.count || 0
             }
