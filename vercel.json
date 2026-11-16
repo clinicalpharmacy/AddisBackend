@@ -25,12 +25,6 @@
       }
     }
   ],
-  "crons": [
-    {
-      "path": "/api/reminders/cron",
-      "schedule": "* * * * *"
-    }
-  ],
   "env": {
     "NODE_ENV": "production"
   }
