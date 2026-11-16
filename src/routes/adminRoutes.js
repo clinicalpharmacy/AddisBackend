@@ -222,19 +222,36 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!supabase) return res.status(503).json({ error: 'Database not configured' });
 
-        const [users, companies, pending, subs, payments, meds, doctors, nurses, pharmacists, students, labs, others, blocked, clients] = await Promise.all([
+        const [
+            users,
+            companies,
+            pending,
+            subs,
+            payments,
+            meds,
+            physicians,
+            nurses,
+            pharmacists,
+            pharmacyStudents,
+            otherStudents,
+            otherHealthProfessionals,
+            labs,
+            blocked,
+            clients
+        ] = await Promise.all([
             supabase.from('users').select('*', { count: 'exact', head: true }),
             supabase.from('companies').select('*', { count: 'exact', head: true }),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('approved', false).eq('role', 'company_admin'),
             supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
             supabase.from('payments').select('amount').eq('status', 'paid'),
             supabase.from('medications').select('*', { count: 'exact', head: true }),
-            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'doctor'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['physician', 'doctor']),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'nurse'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'pharmacist'),
-            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'student'),
-            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
+            supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['pharmacy_student', 'student']),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'other_health_science_student'),
             supabase.from('users').select('*', { count: 'exact', head: true }).in('role', ['other_health_professional', 'health_officer']),
+            supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'laboratory'),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_blocked', true),
             supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'healthcare_client')
         ]);
@@ -257,12 +274,16 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
                 total_medications: meds.count || 0,
                 blocked_users: blocked.count || 0,
                 user_growth: user_growth || 0,
-                doctor_count: doctors.count || 0,
+                physician_count: physicians.count || 0,
+                doctor_count: physicians.count || 0,
                 nurse_count: nurses.count || 0,
                 pharmacist_count: pharmacists.count || 0,
-                student_count: students.count || 0,
+                student_count: (pharmacyStudents.count || 0) + (otherStudents.count || 0),
+                pharmacy_student_count: pharmacyStudents.count || 0,
+                other_health_science_student_count: otherStudents.count || 0,
+                other_health_professionals_count: otherHealthProfessionals.count || 0,
+                others_count: otherHealthProfessionals.count || 0,
                 laboratory_count: labs.count || 0,
-                others_count: others.count || 0,
                 healthcare_client_count: clients.count || 0
             }
         });
